@@ -206,7 +206,12 @@ sequenceDiagram
 5. **Pure-Function Self-Healing Loop**:
    - When validation fails, a `TaskRetryContext` (attempt number, compiler/test output, failed edits) is passed as an immutable input to the model.
    - Every retry records a distinct `NodeExecutionMetadata` entry in SQLite for full retry tracking and cost auditability.
-6. **Aggregation**: `FullImplementationReport` and `full_report.html` generated with diffs, test summaries, and token counts.
+6. **Batch Failure Semantics (Hard Stop)**:
+   - If one or more tasks in a batch exhaust all retries and remain in `FAILED` status, **the entire run halts immediately**. Subsequent batches are not executed because they depend on the outputs of prior batches.
+   - All successfully completed task worktrees from the failed batch that were already merged into `harness/issue-<id>` remain on the branch. The run state is persisted in SQLite as `FAILED_BATCH_N`.
+   - The `FullImplementationReport` is generated with partial results, marking failed tasks and all skipped downstream batches explicitly.
+   - **Resumption** from a failed batch (after the user resolves the root cause, e.g., by editing the plan or fixing an external dependency) is a roadmap item. See Roadmap §4. In Phase 1, the user must start a new run or manually amend the branch.
+7. **Aggregation**: `FullImplementationReport` and `full_report.html` generated with diffs, test summaries, and token counts.
 
 ---
 
@@ -231,7 +236,7 @@ class ExternalDoc(BaseModel):
     source_type: str  # "github_wiki", "confluence", "pr", "issue", "markdown"
 
 class IssueContext(BaseModel):
-    schema_version: str = "1.0"
+    schema_version: Literal["1.0"] = "1.0"
     repo_name: str          # e.g., "owner/my-app"
     repo_path: str          # Local filesystem path to target repo
     base_branch: str        # e.g., "main"
@@ -263,11 +268,11 @@ class TaskBatch(BaseModel):
     tasks: list[TaskItem]  # Executed in parallel across ephemeral git worktrees
 
 class ImplementationPlan(BaseModel):
-    schema_version: str = "1.0"
+    schema_version: Literal["1.0"] = "1.0"
     repo_name: str
     repo_path: str
     base_branch: str
-    working_branch: str    # e.g., "harness/issue-104"
+    working_branch: str    # Auto-derived by harness as f"harness/issue-{issue_id}"; not LLM-emitted
     issue_id: str
     summary: str
     architectural_notes: str
@@ -284,7 +289,7 @@ class PlanIterationContext(BaseModel):
     issue_context: IssueContext
     current_plan: ImplementationPlan
     critic_critique: str | None = None
-    feedback_history: list[UserFeedback] = Field(default_factory=list)
+    feedback_history: list[UserFeedback] = Field(default_factory=list)  # Harness-controlled; bounded N entries; never a raw chat log
 ```
 
 ### C. `TaskDeliverable`, `StructuredFileEdit`, & `TaskRetryContext`
@@ -332,6 +337,7 @@ class FullImplementationReport(BaseModel):
 ```
 
 ### D. `ResearchDossier` (Spikes & Investigations)
+*Defined in `src/hermetic/schemas/research.py`.*
 ```python
 class ResearchDossier(BaseModel):
     topic: str
@@ -345,6 +351,7 @@ class ResearchDossier(BaseModel):
 ```
 
 ### E. `ReviewReport` (Code Review)
+*Defined in `src/hermetic/schemas/review.py` (separate from `research.py` — these are distinct workflows).*
 ```python
 class ReviewFinding(BaseModel):
     severity: Literal["CRITICAL", "WARNING", "SUGGESTION"]
@@ -388,12 +395,13 @@ class ReviewReport(BaseModel):
       input_tokens: int
       output_tokens: int
       cached: bool
+      # cost_usd: deferred to roadmap — initial drivers use subscription plans (no per-token cost)
   ```
 * The Control Plane sums these across all nodes into `FullImplementationReport.token_usage_summary`.
 
 ### C. Rubber Duck / Critic Architecture (`TIER_CRITIC`)
 To prevent models from rubber-stamping their own mistakes:
-* **Multi-Provider Critique (Preferred)**: When configured, the planning node uses Model A (e.g. Gemini Pro / Claude Sonnet), while the critic node uses Model B from a different provider family. Different architectures catch blind spots that self-critique misses.
+* **Multi-Provider Critique (Preferred)**: When configured, the planning node uses Model A (e.g. Gemini Pro / Claude Sonnet), while the critic node uses Model B from a different provider family. Different architectures catch blind spots that self-critique misses. In the default driver configuration, Planning/Research/Review use Claude Sonnet (via Antigravity) and Implementation uses Gemini Flash (via Antigravity); the critic node therefore naturally uses a different model family from the planning node, satisfying the cross-provider requirement without additional configuration.
 * **Adversarial Persona Fallback**: If using a single provider, the critic node uses a strictly scoped adversarial prompt ("*Act as a skeptical Principal Engineer. Find race conditions, unhandled edge cases, missing rollback strategies, and oversized tasks.*").
 
 ### D. Ephemeral Git Worktree Isolation & Deterministic Merges
@@ -426,7 +434,7 @@ A critical architectural boundary must be maintained between probabilistic model
 * **The Deterministic Boundary (Harness Execution)**:
   - Once the model returns `StructuredFileEdit`, the LLM has zero further control over the filesystem or version control.
   - The Data Plane executes 100% deterministic code:
-    1. **Target Verification**: Validates that `search_target` exists uniquely in the file using strict exact-string matching. For the MVP, we intentionally avoid complex fuzzy matching or AST substitution, instead relying on strict prompt instructions and the 3-attempt `TaskRetryContext` loop if the LLM misses formatting on the first attempt.
+    1. **Target Verification**: Validates that `search_target` exists uniquely in the file using strict exact-string matching. For the MVP, we intentionally avoid complex fuzzy matching or AST substitution. This is a deliberate tradeoff: the codebase being targeted is young and small (initially the harness itself), files are short, snippets are precise, and retries are cheap. Two lightweight mitigations are applied before reaching the retry loop: (1) **Unique-match enforcement at prompt time**: the context assembler checks that every candidate search_target appears exactly once in its source file; snippets with zero or multiple matches are either excluded from the context or flagged in the prompt with a warning. (2) **Occurrence-count validation in the applier**: before applying a SearchReplaceBlock, the harness verifies that the search_target string matches exactly once in the live file content and raises a structured error (fed into TaskRetryContext) if not. These two measures eliminate the most common ambiguity failure modes. More advanced fuzzy/AST replacement strategies are deferred to the roadmap.
     2. **Directory & File Creation**: For `CREATE` actions, uses Python's native `pathlib.Path.mkdir(parents=True, exist_ok=True)` to safely and cross-platform create parent directories before writing the file.
     3. **String Substitution**: Applies the exact string replacement cleanly in the ephemeral worktree.
     4. **Deterministic Formatting**: Runs code formatters (e.g., `ruff format`, `black`, `prettier`) so formatting is uniform and predictable.
@@ -446,15 +454,21 @@ A two-tier defense guarantees deterministic parsing:
    - If validation fails, the Pydantic error details are structured into a zero-shot repair prompt or default fallback.
 
 ### G. Interactive HITL & Versioned Plan Refinement: Functional Transitions, Not Chat Transcripts
-* **Why We Avoid Conversational Message Lists**:
-  In standard chatbot agents, prompts accumulate a multi-turn chat transcript (`[User, Assistant, User, Assistant, ...]`). Over several turns, obsolete ideas, hallucinated tangents, and conversational fluff inflate token costs and degrade reasoning quality.
+* **Non-Interactive by Default — Structured Context When Needed**:
+  - **Implementation is fully hermetic and non-interactive.** Once a plan is approved, the execution DAG runs without any human interaction.
+  - **Research and Planning may optionally use bounded structured context history.** Rather than accumulating a free-form chat transcript, the `feedback_history: list[UserFeedback]` field in `PlanIterationContext` carries a structured, bounded list of past `UserFeedback` objects. This is passed to the LLM as organized structured data, not a raw message list, so the model can reason about how the plan has evolved without being polluted by conversational noise.
+  - **What the LLM sees is always bounded and structured**: `IssueContext` (immutable problem definition) + `current_plan` (current state) + optionally `feedback_history` (bounded prior feedback objects, harness-controlled) + `UserFeedback` (latest directive).
+  - **`feedback_history` is harness-controlled, not LLM-generated.** The harness decides what to include (e.g., only the last N feedback entries). It is never a raw chat log.
+  - **LLM-initiated context requests (Research DAG — Roadmap):** Instead of opening a free-form dialogue, the Research Node may emit a structured `ContextRequest` asking the Data Plane for specific symbols, files, or searches. This keeps the system hermetic while allowing the LLM to signal what information it needs.
+  - **Review** may or may not benefit from feedback history; this is left as an open design question for a later phase.
 * **Functional Transition Model**:
   Every interactive turn is treated as a pure state transition:
   $$\text{Plan}_{n+1} = \text{PlanningNode}(\text{IssueContext}, \text{Plan}_n, \text{UserFeedback}_n)$$
-  - **What the LLM sees as context**:
+  - **What the LLM sees as context** (always bounded and structured):
     1. `IssueContext` (the immutable problem definition and repository symbols).
     2. `current_plan` (the last validated `ImplementationPlan` JSON—the current state of the architecture).
-    3. `UserFeedback` (the user's latest critique or directive).
+    3. `feedback_history` (optional, bounded list of prior structured `UserFeedback` objects — harness-controlled, never a raw chat log).
+    4. `UserFeedback` (the user's latest critique or directive).
   - **What the Human sees**:
     - A clear, concise **semantic diff** computed between $\text{Plan}_n$ and $\text{Plan}_{n+1}$ (e.g., `+ Added Task 2.3`, `~ Modified Batch 1 scope`, `- Removed Task 3.1`).
     - The automatically refreshed `plan.html` preview in the browser.
@@ -520,6 +534,47 @@ Runs are organized hierarchically by **workflow** and **identifier/timestamp**:
 
 ---
 
+### K. Token Budget Strategy
+* **Context Window Availability**: The default driver configuration targets Claude Sonnet (200K token context window) for Research, Planning, and Review, and Gemini Flash (1M token context window) for Implementation. For the initial phase — where the harness operates on its own small, young codebase — context overflow is not expected to be a practical concern.
+* **Soft Budget Thresholds (Warn-Only in Phase 1)**:
+  - Sonnet (Research/Planning/Review): warn at **150,000 tokens** assembled in `IssueContext`.
+  - Flash (Implementation): warn at **750,000 tokens** assembled per `TaskSpec`.
+  - No hard truncation is applied in Phase 1. If a soft threshold is exceeded, the ETL assembler logs a warning and proceeds.
+* **Priority Order for Future Truncation** (defined now, enforced in a later phase when targeting larger codebases):
+  1. `user_clarifications` (lowest priority — rarely critical for large tasks)
+  2. Issue `comments` (truncate to most recent N)
+  3. `referenced_docs` / `ExternalDoc` content (truncate body, keep title + URL)
+  4. `code_snippets` (truncate least-relevant snippets last; never truncate the primary file under edit)
+* **Tokenizer**: A conservative character-count approximation (÷ 3.5 chars/token) is used in Phase 1 to avoid adding a `tiktoken` dependency. A model-specific tokenizer may be introduced in a later phase for precision.
+* **Cost Tracking Note**: Because the initial implementation uses subscription-based plans (Antigravity Pro), there is no per-token dollar cost. `NodeExecutionMetadata` tracks token counts for rate-limit awareness and future cost modeling. Dollar-cost estimation is deferred to the roadmap (see Roadmap §3).
+
+### L. Agent Driver: Abstract Interface & Default Configuration
+* **Abstract Base Interface**: All drivers implement a custom `AgentDriver` abstract base class (Python `abc.ABC`) defined in `src/hermetic/compute/agent_driver.py`. The interface is purpose-built for this harness and may evolve. Key abstract methods:
+  ```python
+  class AgentDriver(ABC):
+      @abstractmethod
+      async def invoke(self, prompt: str, system: str, schema: type[BaseModel]) -> BaseModel:
+          """Single stateless invocation returning a validated Pydantic schema."""
+          ...
+
+      @abstractmethod
+      def get_execution_metadata(self) -> NodeExecutionMetadata:
+          """Returns token counts and latency for the last invocation."""
+          ...
+  ```
+* **Driver Selection**: Configured via `pyproject.toml` or CLI flag `--driver`. Default for the POC is `AntigravityDriver` throughout.
+* **Default Model Assignments**:
+  | Workflow Stage | Driver | Model |
+  |---|---|---|
+  | Research | AntigravityDriver | Claude Sonnet (latest) |
+  | Planning | AntigravityDriver | Claude Sonnet (latest) |
+  | Critic / Review | AntigravityDriver | Claude Sonnet (latest) |
+  | Implementation (Tasks) | AntigravityDriver | Gemini Flash (latest) |
+* **MVP vs. Full Implementation**: `AntigravityDriver` is the only driver implemented in the POC. `DirectDriver` (LiteLLM) is the next planned driver (Phase 2), enabling direct API access for cost tracking and non-Antigravity deployments. `CopilotDriver` is a future consideration.
+
+---
+
+
 ## 6. Project Directory Layout
 
 ```
@@ -529,6 +584,7 @@ hermetic-pure-function-dag-coding-harness/
 ├── .python-version             # Pinned to 3.12 (via uv)
 ├── README.md                   # Quickstart and overview
 ├── ProjectOutline.md           # This specification document
+├── .gitignore                  # Excludes .harness/ (state, cache, worktrees, runs) and .python-version
 ├── .harness/                   # Local runtime data (gitignored)
 │   ├── state.db                # SQLite run state & checkpoints
 │   ├── cache/                  # Content-addressable cache entries
@@ -569,23 +625,57 @@ hermetic-pure-function-dag-coding-harness/
 │           ├── context.py      # IssueContext, CodeSnippet, ExternalDoc
 │           ├── plan.py         # ImplementationPlan, TaskBatch, TaskItem, PlanIterationContext
 │           ├── deliverable.py  # TaskDeliverable, StructuredFileEdit, TaskRetryContext
-│           └── research.py     # ResearchDossier, ReviewReport
+│           ├── research.py     # ResearchDossier
+│           └── review.py       # ReviewReport, ReviewFinding
 └── tests/                      # Unit and integration tests
     ├── test_dag_engine.py
     ├── test_schemas.py
     ├── test_sanitizer.py
     ├── test_worktree.py
     ├── test_cache.py
-    └── test_etl.py
+    ├── test_etl.py
+    └── test_agent_driver.py
 ```
 
 ---
 
-## 7. Immediate Next Steps (Phase 1 Implementation)
+## 7. Implementation Phases
 
-1. **Initialize Project**: Pin Python 3.12 (`uv python pin 3.12`), declare dependencies (`pydantic>=2.0`, `typer`, `rich`, `jinja2`, `aiosqlite`, `pytest`).
-2. **Implement Core Schemas**: Write `context.py`, `plan.py`, `deliverable.py`, and `research.py` in `src/hermetic/schemas/` with interactive feedback and retry models.
-3. **Implement JSON Sanitizer & Test Suite**: Build `sanitizer.py` and `tests/test_sanitizer.py` verifying resilient handling of markdown fences, trailing commas, and Pydantic validation.
-4. **Implement HTML Renderer**: Create the Jinja2 template and compiler to generate `plan.html` from `plan.json`.
-5. **Implement Minimal DAG Engine & Local Cache**: Write the lightweight `graphlib`-based runner and SHA256 cache.
-6. **Implement End-to-End Walking Skeleton (Workflow 1)**: Issue intake $\to$ `IssueContext` $\to$ Planning Node $\to$ Critic Node $\to$ Interactive Review $\to$ `plan.json` $\to$ `plan.html`.
+### Phase 0 — Project Scaffold & Tooling (Zero LLM calls)
+1. **Initialize Project**: `uv python pin 3.12`, declare dependencies (`pydantic>=2.0`, `typer`, `rich`, `jinja2`, `aiosqlite`, `pytest`), create `pyproject.toml` with a `hermetic` CLI entry point.
+2. **Directory Layout**: Create all `src/hermetic/` package stubs and `tests/` files.
+3. **`.gitignore`**: Add `.harness/` (state, cache, worktrees, runs) and `.python-version` to `.gitignore`.
+
+### Phase 1a — Core Schemas, Sanitizer & DAG Engine (Pure Python, No I/O)
+4. **Implement Core Schemas**: Write `context.py`, `plan.py`, `deliverable.py`, `research.py`, and `review.py` in `src/hermetic/schemas/` with:
+   - `Literal["1.0"]` for `schema_version` fields.
+   - `working_branch` auto-derived as `f"harness/issue-{issue_id}"` — not LLM-emitted.
+   - `feedback_history` annotated as harness-controlled.
+5. **Implement JSON Sanitizer**: Build `sanitizer.py` — markdown fence stripping, trailing comma normalization, Pydantic validation with repair prompt path.
+6. **Implement Minimal DAG Engine**: Lightweight `graphlib.TopologicalSorter` + `asyncio.TaskGroup` runner in `dag_engine.py` (under 150 lines).
+7. **Implement Content-Addressable Cache**: SHA256-keyed JSON cache in `cache.py`.
+8. **Test Suite**: `test_schemas.py`, `test_sanitizer.py`, `test_dag_engine.py`, `test_cache.py` — all pass with `pytest`, zero LLM or network calls.
+
+### Phase 1b — Data Plane & HTML Renderer (No LLM calls, Mocked Git)
+9. **Implement HTML Renderer**: Jinja2 templates for `plan.html` and `full_report.html` in `src/hermetic/data/renderer/`.
+10. **Implement ETL & Token Budget Assembler**: Context assembly with soft-threshold logging, character-count approximation tokenizer.
+11. **Implement `worktree.py`**: `git worktree add/remove`, structured edit application, unique-match enforcement, occurrence-count validation.
+12. **Test Suite**: `test_etl.py`, `test_worktree.py` using local fixture repos (no GitHub API, no LLM).
+
+### Phase 1c — Agent Driver & Walking Skeleton (Real LLM, Mocked GitHub)
+13. **Implement `AgentDriver` ABC + `AntigravityDriver`**: Headless Antigravity subprocess driver with Sonnet/Flash model selection per workflow stage.
+14. **Implement `critic.py`**: Rubber Duck critic node using cross-provider defaults (Sonnet for planning, Flash for implementation).
+15. **End-to-End Walking Skeleton**: Issue intake from a *local JSON fixture* (no GitHub API yet) → `IssueContext` → Planning Node → Critic → `plan.json` → `plan.html`. Full run with real Antigravity calls.
+16. **Test Suite**: `test_agent_driver.py` with mocked subprocess. Integration test with real Antigravity (opt-in, skipped in CI).
+
+### Phase 1d — Full Workflow 1 + Self-Hosting
+17. **GitHub Client**: Implement `client/github.py` — GraphQL issue fetch, linked resources.
+18. **CLI Commands**: `hermetic plan`, `hermetic approve`, `hermetic review` via Typer/Rich.
+19. **State Machine & SQLite Persistence**: Full `state_machine.py` with HITL suspension/resumption.
+20. **Self-Hosting Test**: Run `hermetic plan --issue <id> --repo .` against this repository. Verify `plan.html` renders correctly and the plan is coherent.
+
+### Phase 1e — Workflow 2: Batch Execution
+21. **Full Batch Execution**: Wire `hermetic implement <run-id>` through the DAG — parallel worktrees, validation, retry loop, merge, hard-stop on batch failure.
+22. **`FullImplementationReport` + `full_report.html`**: Aggregated deliverables with patch diffs, test summaries, token counts.
+23. **Dogfooding Run**: Use the harness to implement a real improvement to itself.
+
