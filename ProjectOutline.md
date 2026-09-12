@@ -404,13 +404,16 @@ To eliminate concurrency hazards during parallel task execution:
   git worktree add -b harness/task-Ti .harness/worktrees/task-Ti <batch_base_commit>
   ```
 * **Read-Only Model Boundary**: The LLM runs with read-only view of the code. It produces structured file edits (`StructuredFileEdit`).
-* **Deterministic Execution & Commits**:
+* **Deterministic Execution & Commits (Rebase Strategy)**:
   1. The deterministic harness writes file modifications inside `.harness/worktrees/task-Ti`.
   2. Formatters (e.g. `ruff format`) and local verification commands run strictly inside that worktree.
   3. If verification passes, the harness creates a standard commit on `harness/task-Ti`.
-  4. The harness deterministically merges `harness/task-Ti` into the batch branch (`harness/issue-<id>`).
+  4. To merge back into the batch branch (`harness/issue-<id>`) without criss-cross merge commits:
+     - The harness checks out `harness/task-Ti` and rebases it onto `harness/issue-<id>`.
+     - Because tasks within a batch are planned to touch strictly disjoint files, the rebase applies cleanly.
+     - The harness then checks out `harness/issue-<id>` and performs a fast-forward merge of the task branch.
   5. The temporary worktree is pruned (`git worktree remove --force`).
-* **Conflict Prevention**: Batches enforce file-disjointness at plan time. If an unexpected merge collision occurs, it is detected deterministically by Git rather than hallucinated by an agent.
+* **Conflict Prevention & Shared Files**: Batches enforce file-disjointness at plan time. To handle central files (e.g., `pyproject.toml`, `uv.lock`, `__init__.py`), the Planning prompt strictly instructs the LLM that any task modifying these shared files MUST be isolated into its own exclusive batch to run sequentially. If an unexpected merge collision still occurs, it is detected deterministically by Git rather than hallucinated by an agent.
 
 ### E. Structured File Edits vs. Raw Git Diffs: The Deterministic Boundary
 A critical architectural boundary must be maintained between probabilistic model synthesis and deterministic software engineering:
@@ -423,12 +426,13 @@ A critical architectural boundary must be maintained between probabilistic model
 * **The Deterministic Boundary (Harness Execution)**:
   - Once the model returns `StructuredFileEdit`, the LLM has zero further control over the filesystem or version control.
   - The Data Plane executes 100% deterministic code:
-    1. **Target Verification**: Validates that `search_target` exists uniquely in the file (fail-fast if missing or ambiguous).
-    2. **String/AST Substitution**: Applies the exact replacement cleanly in the ephemeral worktree.
-    3. **Deterministic Formatting**: Runs code formatters (e.g., `ruff format`, `black`, `prettier`) so formatting is uniform and predictable.
-    4. **Canonical Diff Generation**: Runs `git diff` via subprocess on the actual filesystem. Git itself calculates the canonical, syntactically pristine unified diff stored in `TaskDeliverable.patch_diff`.
-    5. **Deterministic Verification**: Executes linters and tests inside the worktree.
-    6. **Deterministic Commits & Merges**: Creates git commits and merges branches without any LLM intervention.
+    1. **Target Verification**: Validates that `search_target` exists uniquely in the file using strict exact-string matching. For the MVP, we intentionally avoid complex fuzzy matching or AST substitution, instead relying on strict prompt instructions and the 3-attempt `TaskRetryContext` loop if the LLM misses formatting on the first attempt.
+    2. **Directory & File Creation**: For `CREATE` actions, uses Python's native `pathlib.Path.mkdir(parents=True, exist_ok=True)` to safely and cross-platform create parent directories before writing the file.
+    3. **String Substitution**: Applies the exact string replacement cleanly in the ephemeral worktree.
+    4. **Deterministic Formatting**: Runs code formatters (e.g., `ruff format`, `black`, `prettier`) so formatting is uniform and predictable.
+    5. **Canonical Diff Generation**: Runs `git diff` via subprocess on the actual filesystem. Git itself calculates the canonical, syntactically pristine unified diff stored in `TaskDeliverable.patch_diff`.
+    6. **Deterministic Verification**: Executes linters and tests inside the worktree.
+    7. **Deterministic Commits & Merges**: Creates git commits and merges branches without any LLM intervention.
 
 ### F. Output Defense: Strict Structured Outputs & Deterministic JSON Sanitizer
 Even with API-level JSON mode (`response_format={"type": "json_object"}` or schema-constrained decoding), models occasionally include markdown wrappers, trailing commas, or control characters.
