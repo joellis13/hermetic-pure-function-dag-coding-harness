@@ -9,11 +9,11 @@ This plan extracts the "what we need now" (Phase 0 - 1e) to achieve the POC (dog
 The core requirement for the POC is to build enough of the harness so it can plan and implement an update on itself ("dogfooding"). This includes project scaffolding, core schemas, DAG execution, worktree isolation, Antigravity integration, state machine, and basic HTML rendering.
 
 ### Story 1: Project Scaffolding (Phase 0)
-*Goal: Set up the Python 3.12 environment, dependencies, and directory structure.*
+*Goal: Set up the Python 3.13 environment, dependencies, and directory structure.*
 - **Details:** 
-  - Use Python 3.12 pinned via `uv` to ensure maximum performance and 100% precompiled binary wheel availability on Windows.
+  - Use Python 3.13 pinned via `uv` to ensure improved error messages, full Pydantic v2 support, and 100% precompiled binary wheel availability on Windows. Python 3.14 is avoided due to Rust/Pydantic binary wheel issues.
   - 100% `uv` project management to eliminate global package contamination (deps locked in `uv.lock`).
-- **Task 1.1:** Initialize the Python 3.12 project with `uv` and define dependencies (`pydantic>=2.0`, `typer`, `rich`, `jinja2`, `aiosqlite`, `pytest`) in `pyproject.toml`.
+- **Task 1.1:** Initialize the Python 3.13 project with `uv` and define dependencies (`pydantic>=2.0`, `typer`, `rich`, `jinja2`, `aiosqlite`, `pytest`, `google-antigravity`) in `pyproject.toml`.
 - **Task 1.2:** Create the project directory layout (`src/hermetic/cli`, `control`, `data`, `compute`, `schemas`, and `tests`).
 - **Task 1.3:** Create the `.gitignore` to exclude `.harness/` (state, cache, worktrees, runs) and `.python-version`.
 
@@ -46,12 +46,12 @@ The core requirement for the POC is to build enough of the harness so it can pla
 ### Story 4: AI Compute and Walking Skeleton (Phase 1c)
 *Goal: Connect the deterministic harness to the Antigravity LLM backend.*
 - **Details:**
-  - All executions are stateless, non-interactive invocations. The `AgentDriver` abstract interface natively extracts token counts (`usage_metadata`) and latency.
-  - By default, Antigravity uses Claude Sonnet for Research/Planning/Review and Gemini Flash for Implementation tasks.
-  - The Critic Node uses cross-provider evaluation (or an adversarial persona fallback) to prevent the planning node from rubber-stamping its own mistakes.
-- **Task 4.1:** Define `AgentDriver` ABC and implement `AntigravityDriver`.
-- **Task 4.2:** Implement Critic Node (`critic.py`) using the cross-provider fallback setup.
-- **Task 4.3:** Build a "Walking Skeleton" script to ingest a local JSON fixture and output a rendered `plan.html`.
+  - **Invocation Model**: All AI node executions use the `google-antigravity` Python SDK (`google.antigravity.Agent` + `LocalAgentConfig`) via native `async/await`. This integrates directly with `asyncio.TaskGroup` parallel execution, exposes structured `usage_metadata` for token counts and latency, and is fully mockable via the `AgentDriver` ABC. Shell-out to the `agy` CLI is explicitly rejected (brittle stdout parsing, no structured token metadata).
+  - By default, Antigravity uses **Claude Sonnet** for Research/Planning/Review and **Gemini Flash** for Implementation tasks (speed and cost efficiency for mechanical code generation from well-specified `TaskItem` instructions).
+  - The Critic Node **must** use a cross-provider model (i.e., if the Planner uses Claude Sonnet, the Critic uses a Gemini model, and vice versa). This is a **hard requirement**, not a nice-to-have — it prevents both nodes from sharing the same training blind spots and rubber-stamping each other's mistakes. A same-provider adversarial-persona fallback is only acceptable if the cross-provider call fails.
+- **Task 4.1:** Define `AgentDriver` ABC and implement `AntigravityDriver` wrapping `google.antigravity.Agent`. The driver exposes `async invoke(prompt: str, system: str) -> tuple[str, NodeExecutionMetadata]` and is configured via `LocalAgentConfig`.
+- **Task 4.2:** Implement Critic Node (`critic.py`) enforcing the cross-provider evaluation rule above.
+- **Task 4.3:** Build a "Walking Skeleton" script to ingest a **hardcoded, version-controlled local JSON fixture** (`tests/fixtures/issue_context.json`) and output a rendered `plan.html`. The `AntigravityDriver` is mocked to return a deterministic `ImplementationPlan` JSON string — no network calls, no GitHub token required. This test must be fully reproducible on demand via `pytest`.
 - **Task 4.4:** Write integration tests for the `AgentDriver` (with mocked and live modes).
 
 ### Story 5: Planning Workflow and CLI (Phase 1d)

@@ -55,6 +55,14 @@ Structured using clean architecture layers:
 ## C. Pure Compute Plane & Unified Agent Driver
 Regardless of the backend (Direct Model APIs, Antigravity, or Copilot), all AI node executions are **stateless, non-interactive invocations with evolving supporting context**.
 
+**Invocation Model**: The `AntigravityDriver` uses the `google-antigravity` Python SDK (`google.antigravity.Agent` + `LocalAgentConfig`) via native `async/await`. This integrates cleanly with `asyncio.TaskGroup`, exposes structured `usage_metadata` for token counts and latency, and is fully mockable in tests via the `AgentDriver` ABC. Shell-out to the `agy` CLI is explicitly rejected.
+
+**Default Model Tiers**:
+- **Claude Sonnet**: Research, Planning, and Review nodes (long-context reasoning, architectural synthesis, critique).
+- **Gemini Flash**: Implementation Task nodes (speed and cost efficiency for mechanical code generation from well-specified `TaskItem` instructions).
+
+**Cross-Provider Critic (Hard Requirement)**: The Critic Node **must** use a model from a different provider than the Planner. If the Planner runs on Claude Sonnet, the Critic runs on a Gemini model (and vice versa). This prevents both nodes from sharing training blind spots. A same-provider adversarial-persona prompt is only acceptable as a fallback when the cross-provider call fails.
+
 ---
 
 # Workflows & Standard Operating Procedures

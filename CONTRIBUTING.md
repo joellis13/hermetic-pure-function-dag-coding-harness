@@ -2,9 +2,9 @@
 
 ## Python Version & Environment
 
-* **Target Version: Python 3.12**
-  * *Why 3.12*: Provides maximum performance, full Pydantic v2 support, and 100% precompiled binary wheel availability on Windows.
-  * Running `uv python pin 3.12` instructs `uv` to download and isolate a dedicated Python 3.12 runtime, bypassing host PATH versions.
+* **Target Version: Python 3.13**
+  * *Why 3.13*: Full Pydantic v2 support, 100% precompiled binary wheel availability on Windows (same as 3.12), meaningfully improved error messages, and a faster interactive REPL. The experimental JIT and free-threading flags are disabled by default — no risk, only upside. Python 3.14 is avoided due to Rust/Pydantic binary wheel build issues.
+  * Running `uv python pin 3.13` instructs `uv` to download and isolate a dedicated Python 3.13 runtime, bypassing host PATH versions.
 * **100% `uv` Project Management**:
   * Dependencies are declared in `pyproject.toml` and locked in `uv.lock`.
   * Commands run seamlessly: `uv run hermetic ...`.
