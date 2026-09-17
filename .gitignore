@@ -1,5 +1,4 @@
 .harness/
-.python-version
 
 # Standard Python ignores
 __pycache__/
