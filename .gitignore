@@ -1,0 +1,11 @@
+.harness/
+.python-version
+
+# Standard Python ignores
+__pycache__/
+*.py[cod]
+*.class
+.pytest_cache/
+.venv/
+venv/
+.env
