@@ -1,0 +1,248 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Implementation Report: {{ report.plan_id }}</title>
+  <style>
+    :root {
+      --bg-color: #f8f9fa;
+      --card-bg: #ffffff;
+      --text-main: #212529;
+      --text-muted: #6c757d;
+      --border-color: #dee2e6;
+      --primary: #0d6efd;
+      --header-bg: #1e293b;
+      --header-text: #ffffff;
+      --badge-bg: #e2e8f0;
+      --success-border: #198754;
+      --danger-bg: #f8d7da;
+      --danger-border: #f5c2c7;
+      --danger-text: #842029;
+    }
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+      background-color: var(--bg-color);
+      color: var(--text-main);
+      line-height: 1.6;
+      padding: 0;
+    }
+    header {
+      background-color: var(--header-bg);
+      color: var(--header-text);
+      padding: 2rem 2.5rem;
+      border-bottom: 3px solid var(--primary);
+    }
+    header h1 { font-size: 1.75rem; font-weight: 600; margin-bottom: 0.5rem; }
+    .meta-bar {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 1.5rem;
+      font-size: 0.9rem;
+      color: #cbd5e1;
+    }
+    .meta-bar strong { color: #f8fafc; }
+    main { max-width: 1100px; margin: 2rem auto; padding: 0 1.5rem; }
+    .stats-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+      gap: 1rem;
+      margin-bottom: 2rem;
+    }
+    .stat-card {
+      background: var(--card-bg);
+      border: 1px solid var(--border-color);
+      border-radius: 8px;
+      padding: 1.25rem;
+      text-align: center;
+      box-shadow: 0 1px 3px rgba(0,0,0,0.05);
+    }
+    .stat-card .value {
+      font-size: 1.75rem;
+      font-weight: 700;
+      color: var(--primary);
+    }
+    .stat-card .label {
+      font-size: 0.85rem;
+      color: var(--text-muted);
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
+    }
+    .stat-card.failed .value { color: #dc3545; }
+    .danger-box {
+      background-color: var(--danger-bg);
+      border: 1px solid var(--danger-border);
+      color: var(--danger-text);
+      border-radius: 6px;
+      padding: 1.25rem;
+      margin-bottom: 2rem;
+    }
+    .danger-box h2 { font-size: 1.1rem; margin-bottom: 0.5rem; }
+    .danger-box ul { margin-left: 1.5rem; }
+    .deliverable-card {
+      background: var(--card-bg);
+      border: 1px solid var(--border-color);
+      border-left: 4px solid var(--success-border);
+      border-radius: 6px;
+      padding: 1.5rem;
+      margin-bottom: 1.5rem;
+      box-shadow: 0 1px 3px rgba(0,0,0,0.05);
+    }
+    .deliverable-header {
+      display: flex;
+      justify-content: space-between;
+      align-items: baseline;
+      margin-bottom: 0.75rem;
+      flex-wrap: wrap;
+      gap: 0.5rem;
+    }
+    .task-id {
+      font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+      font-size: 0.9rem;
+      background: var(--badge-bg);
+      padding: 0.25rem 0.6rem;
+      border-radius: 4px;
+      font-weight: 600;
+    }
+    .explanation {
+      font-size: 0.95rem;
+      color: var(--text-main);
+      margin-bottom: 1rem;
+      white-space: pre-wrap;
+    }
+    .table-wrapper {
+      overflow-x: auto;
+      margin-top: 1rem;
+    }
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      font-size: 0.85rem;
+    }
+    th, td {
+      border: 1px solid var(--border-color);
+      padding: 0.6rem 0.8rem;
+      text-align: left;
+      vertical-align: top;
+    }
+    th {
+      background: #f1f5f9;
+      font-weight: 600;
+    }
+    td code {
+      font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+      white-space: pre-wrap;
+      word-break: break-all;
+    }
+    .empty-state {
+      text-align: center;
+      padding: 3rem;
+      color: var(--text-muted);
+      font-style: italic;
+    }
+    footer {
+      text-align: center;
+      padding: 2rem;
+      font-size: 0.85rem;
+      color: var(--text-muted);
+      border-top: 1px solid var(--border-color);
+      margin-top: 3rem;
+    }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>Implementation Report: {{ report.plan_id }}</h1>
+    <div class="meta-bar">
+      <div><span>Plan ID:</span> <strong>{{ report.plan_id }}</strong></div>
+      <div><span>Deliverables:</span> <strong>{{ report.deliverables | length }}</strong></div>
+      <div><span>Failed Tasks:</span> <strong>{{ report.failed_tasks | length }}</strong></div>
+    </div>
+  </header>
+
+  <main>
+    <div class="stats-grid">
+      <div class="stat-card">
+        <div class="value">{{ report.deliverables | length }}</div>
+        <div class="label">Deliverables</div>
+      </div>
+      <div class="stat-card {% if report.failed_tasks %}failed{% endif %}">
+        <div class="value">{{ report.failed_tasks | length }}</div>
+        <div class="label">Failed Tasks</div>
+      </div>
+      <div class="stat-card">
+        <div class="value">{{ report.total_input_tokens }}</div>
+        <div class="label">Total Input Tokens</div>
+      </div>
+      <div class="stat-card">
+        <div class="value">{{ report.total_output_tokens }}</div>
+        <div class="label">Total Output Tokens</div>
+      </div>
+    </div>
+
+    {% if report.failed_tasks %}
+    <section class="danger-box">
+      <h2>Failed Tasks ({{ report.failed_tasks | length }})</h2>
+      <ul>
+        {% for task_id in report.failed_tasks %}
+        <li><code>{{ task_id }}</code></li>
+        {% endfor %}
+      </ul>
+    </section>
+    {% endif %}
+
+    {% if report.summary %}
+    <section class="deliverable-card" style="border-left-color: var(--primary);">
+      <div class="deliverable-header">
+        <strong>Run Summary</strong>
+      </div>
+      <p class="explanation">{{ report.summary }}</p>
+    </section>
+    {% endif %}
+
+    {% if report.deliverables %}
+      {% for deliverable in report.deliverables %}
+      <section class="deliverable-card">
+        <div class="deliverable-header">
+          <strong>Task Deliverable</strong>
+          <span class="task-id">{{ deliverable.task_id }}</span>
+        </div>
+        {% if deliverable.explanation %}
+        <p class="explanation">{{ deliverable.explanation }}</p>
+        {% endif %}
+
+        {% if deliverable.edits %}
+        <div class="table-wrapper">
+          <table>
+            <thead>
+              <tr>
+                <th style="width: 25%;">File Path</th>
+                <th style="width: 35%;">Search String</th>
+                <th style="width: 40%;">Replacement String</th>
+              </tr>
+            </thead>
+            <tbody>
+              {% for edit in deliverable.edits %}
+              <tr>
+                <td><code>{{ edit.file_path }}</code></td>
+                <td><code>{{ edit.search_string }}</code></td>
+                <td><code>{{ edit.replacement_string }}</code></td>
+              </tr>
+              {% endfor %}
+            </tbody>
+          </table>
+        </div>
+        {% endif %}
+      </section>
+      {% endfor %}
+    {% else %}
+      <div class="empty-state">No deliverables generated.</div>
+    {% endif %}
+  </main>
+
+  <footer>
+    Generated by Hermetic Coding Harness &bull; Plan {{ report.plan_id }}
+  </footer>
+</body>
+</html>

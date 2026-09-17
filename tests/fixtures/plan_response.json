@@ -1,0 +1,19 @@
+{
+  "plan_id": "plan-walking-skeleton",
+  "issue_id": "GH-1",
+  "batches": [
+    {
+      "batch_id": "batch-1",
+      "description": "Implement AgentDriver",
+      "tasks": [
+        {
+          "id": "task-driver",
+          "description": "Create driver.py with AgentDriver ABC and AntigravityDriver",
+          "instruction": "Create src/hermetic/compute/driver.py with NodeExecutionMetadata dataclass, AgentDriver ABC, AntigravityDriver concrete class, and MockDriver. Follow the specification in the implementation plan exactly.",
+          "dependencies": []
+        }
+      ]
+    }
+  ],
+  "iteration_context": {"iteration": 0, "feedback": ""}
+}

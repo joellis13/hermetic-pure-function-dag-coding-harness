@@ -1,0 +1,14 @@
+{
+  "issue_id": "GH-1",
+  "title": "Add AgentDriver ABC and AntigravityDriver",
+  "description": "Implement the AgentDriver abstract base class and its AntigravityDriver concrete implementation in `src/hermetic/compute/driver.py`. The driver must expose `async invoke(prompt, system) -> tuple[str, NodeExecutionMetadata]`.",
+  "snippets": [
+    {
+      "file_path": "src/hermetic/compute/__init__.py",
+      "content": "",
+      "start_line": 1,
+      "end_line": 1
+    }
+  ],
+  "docs": []
+}

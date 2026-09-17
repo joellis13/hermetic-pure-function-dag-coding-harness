@@ -1,0 +1,177 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Implementation Plan: {{ plan.issue_id }}</title>
+  <style>
+    :root {
+      --bg-color: #f8f9fa;
+      --card-bg: #ffffff;
+      --text-main: #212529;
+      --text-muted: #6c757d;
+      --border-color: #dee2e6;
+      --primary: #0d6efd;
+      --header-bg: #1e293b;
+      --header-text: #ffffff;
+      --badge-bg: #e2e8f0;
+      --warning-bg: #fff3cd;
+      --warning-border: #ffecb5;
+      --warning-text: #664d03;
+    }
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+      background-color: var(--bg-color);
+      color: var(--text-main);
+      line-height: 1.6;
+      padding: 0;
+    }
+    header {
+      background-color: var(--header-bg);
+      color: var(--header-text);
+      padding: 2rem 2.5rem;
+      border-bottom: 3px solid var(--primary);
+    }
+    header h1 { font-size: 1.75rem; font-weight: 600; margin-bottom: 0.5rem; }
+    .meta-bar {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 1.5rem;
+      font-size: 0.9rem;
+      color: #cbd5e1;
+    }
+    .meta-bar strong { color: #f8fafc; }
+    main { max-width: 1100px; margin: 2rem auto; padding: 0 1.5rem; }
+    .card {
+      background: var(--card-bg);
+      border: 1px solid var(--border-color);
+      border-radius: 8px;
+      padding: 1.5rem;
+      margin-bottom: 1.5rem;
+      box-shadow: 0 1px 3px rgba(0,0,0,0.05);
+    }
+    .context-card h2 { font-size: 1.25rem; margin-bottom: 0.5rem; color: var(--header-bg); }
+    .context-card p { white-space: pre-wrap; font-size: 0.95rem; }
+    .feedback-box {
+      background-color: var(--warning-bg);
+      border: 1px solid var(--warning-border);
+      color: var(--warning-text);
+      border-radius: 6px;
+      padding: 1rem 1.25rem;
+      margin-bottom: 1.5rem;
+    }
+    .feedback-box h3 { font-size: 1rem; margin-bottom: 0.25rem; }
+    .batch-section { margin-bottom: 2rem; }
+    .batch-heading {
+      font-size: 1.3rem;
+      font-weight: 600;
+      margin-bottom: 1rem;
+      padding-bottom: 0.5rem;
+      border-bottom: 2px solid var(--border-color);
+      color: var(--header-bg);
+    }
+    .task-card {
+      background: var(--card-bg);
+      border: 1px solid var(--border-color);
+      border-left: 4px solid var(--primary);
+      border-radius: 6px;
+      padding: 1.25rem;
+      margin-bottom: 1rem;
+    }
+    .task-header {
+      display: flex;
+      justify-content: space-between;
+      align-items: baseline;
+      margin-bottom: 0.5rem;
+      flex-wrap: wrap;
+      gap: 0.5rem;
+    }
+    .task-id {
+      font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+      font-size: 0.85rem;
+      background: var(--badge-bg);
+      padding: 0.2rem 0.5rem;
+      border-radius: 4px;
+      color: var(--text-main);
+    }
+    .task-title { font-size: 1.05rem; font-weight: 600; }
+    .task-instruction {
+      font-size: 0.9rem;
+      color: var(--text-muted);
+      margin-top: 0.5rem;
+      white-space: pre-wrap;
+      background: #f1f5f9;
+      padding: 0.75rem;
+      border-radius: 4px;
+      font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+    }
+    .task-deps {
+      margin-top: 0.5rem;
+      font-size: 0.85rem;
+      color: var(--text-muted);
+    }
+    footer {
+      text-align: center;
+      padding: 2rem;
+      font-size: 0.85rem;
+      color: var(--text-muted);
+      border-top: 1px solid var(--border-color);
+      margin-top: 3rem;
+    }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>Implementation Plan: {{ plan.issue_id }}</h1>
+    <div class="meta-bar">
+      <div><span>Plan ID:</span> <strong>{{ plan.plan_id }}</strong></div>
+      <div><span>Issue ID:</span> <strong>{{ plan.issue_id }}</strong></div>
+      <div><span>Iteration:</span> <strong>{{ plan.iteration_context.iteration }}</strong></div>
+    </div>
+  </header>
+
+  <main>
+    {% if plan.iteration_context.iteration > 0 and plan.iteration_context.feedback %}
+    <div class="feedback-box">
+      <h3>Iteration {{ plan.iteration_context.iteration }} Feedback</h3>
+      <p>{{ plan.iteration_context.feedback }}</p>
+    </div>
+    {% endif %}
+
+    {% if context %}
+    <section class="card context-card">
+      <h2>{{ context.title }}</h2>
+      <p>{{ context.description }}</p>
+    </section>
+    {% endif %}
+
+    {% for batch in plan.batches %}
+    <section class="batch-section">
+      <h2 class="batch-heading">{{ batch.description if batch.description else ('Batch ' ~ loop.index) }}</h2>
+      {% for task in batch.tasks %}
+      <div class="task-card">
+        <div class="task-header">
+          <span class="task-title">{{ task.description }}</span>
+          <span class="task-id">{{ task.id }}</span>
+        </div>
+        <div class="task-instruction">{{ task.instruction }}</div>
+        <div class="task-deps">
+          <strong>Dependencies:</strong>
+          {% if task.dependencies %}
+            {{ task.dependencies | join(', ') }}
+          {% else %}
+            None
+          {% endif %}
+        </div>
+      </div>
+      {% endfor %}
+    </section>
+    {% endfor %}
+  </main>
+
+  <footer>
+    Generated by Hermetic Coding Harness &bull; Plan {{ plan.plan_id }}
+  </footer>
+</body>
+</html>
