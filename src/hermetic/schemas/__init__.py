@@ -8,6 +8,7 @@ from hermetic.schemas.deliverable import (
 )
 from hermetic.schemas.research import ResearchQuery, ResearchResult
 from hermetic.schemas.review import ReviewFeedback
+from hermetic.schemas.run import RunStatus
 
 __all__ = [
     "CodeSnippet",
@@ -24,4 +25,5 @@ __all__ = [
     "ResearchQuery",
     "ResearchResult",
     "ReviewFeedback",
+    "RunStatus",
 ]
