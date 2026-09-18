@@ -52,16 +52,19 @@ In Phase 1, a batch failure causes a hard stop. The user must manually amend the
 - **Plan Amendment Flow**: Allow the user to edit individual `TaskItem` entries in `plan.json` and resume execution from a specific batch index (`hermetic resume <run-id> --from-batch 2`).
 - **Partial Batch Retry**: On resumption, re-execute only the failed tasks in a batch, not the entire batch.
 
-### Story 11: DirectDriver (LiteLLM / Native SDK)
-*Goal: Support users without Antigravity subscriptions or those needing direct API access.*
+### Story 11: DirectDriver (LiteLLM / Native SDK - Primary BYOK Path)
+*Goal: Provide a first-class, pure-function inference driver supporting BYOK, constrained decoding, prompt caching, and cost tracking.*
 **The Problem:**
-The POC exclusively uses `AntigravityDriver`. Users without an Antigravity subscription, or who need direct model API access for cost control or model selection flexibility, have no alternative.
+The POC exclusively uses `AntigravityDriver` (a subscription-based agent wrapper). While practical for early prototyping, wrapping high-level agentic runtimes introduces hidden meta-prompts, lacks native logit-level schema enforcement, and limits prompt caching. Users needing direct API access (Bring Your Own Key / BYOK), granular cost controls, or headless CI/CD execution have no alternative.
 
 **The Planned Solution:**
-Implement `DirectDriver` as the second driver in Phase 2:
-- Uses LiteLLM for provider-agnostic API calls (Gemini, Claude, GPT-4, etc.).
-- Supports schema-constrained JSON mode (`response_format={"type": "json_object"}`).
-- Enables per-token cost tracking (see Roadmap §3).
+Implement `DirectDriver` as the primary compute driver in Phase 2:
+- **Provider-Agnostic BYOK**: Uses LiteLLM or direct provider SDKs (Google Gemini, Anthropic, OpenAI, Bedrock, Vertex, etc.) configured via standard environment variables and cloud IAM.
+- **Native Constrained Decoding**: Leverages model-level structured outputs (`response_schema` / `response_format={"type": "json_schema"}`) via grammar-guided logit masking, rendering schema validation failures near zero and eliminating the need for prompt repair loops.
+- **Prompt Caching Integration**: Exposes explicit cache control breakpoints for large codebase contexts (`IssueContext`), reducing token costs and latency by up to 90% across DAG nodes.
+- **True Hermetic Determinism**: Eliminates vendor meta-prompts and provides exact sampling parameters (`temperature=0.0`, `seed`, `top_p`, and log probabilities).
+- **Headless CI/CD Ready**: Executes reliably in non-interactive GitHub Actions runners and containerized environments without desktop daemon dependencies.
+- **Cost Tracking & Budget Caps**: Integrates directly with Story 9 per-token dollar cost calculations and run budget limits.
 - Selectable via `--driver direct` CLI flag or `pyproject.toml` config.
 
 ### Story 12: Jira & Confluence Integration
@@ -80,10 +83,17 @@ Phase 1 targets a single repository per run.
 **The Planned Solution:**
 The schema already supports `repo_name` / `repo_path` overrides per `TaskItem`. In a future phase, implement multi-repo batch execution where different tasks in the same plan target different local repositories.
 
-### Story 14: CopilotDriver
-*Goal: Support GitHub Copilot as an alternative headless AI runtime.*
+### Story 14: CopilotDriver (Subscription Fallback)
+*Goal: Support GitHub Copilot strictly as a convenience driver for users with existing flat-rate subscriptions or locked-down enterprise environments.*
 **The Problem:**
-GitHub Copilot is a widely available LLM runtime that some users may prefer.
+Some developers have existing GitHub Copilot personal or enterprise subscriptions and cannot justify per-token API charges, or work in restricted corporate IT environments where direct API keys (OpenAI/Anthropic) are prohibited but GitHub Copilot is pre-approved.
+
+**Architectural Decision: BYOK via Copilot is Explicitly Rejected:**
+Routing user-provided API keys (BYOK) *through* Copilot is explicitly out-of-scope. Doing so introduces the "worst of both worlds": users pay per-token cloud costs while still suffering Copilot's proxy latency, lack of grammar-constrained decoding, rate throttling, and prompt wrapping. All BYOK and cloud API key functionality belongs strictly in `DirectDriver` (Story 11).
 
 **The Planned Solution:**
-Implement `CopilotDriver` as a headless CLI / Language Server invocation. Copilot's more constrained I/O interface makes this lower priority than `DirectDriver`.
+Implement `CopilotDriver` strictly as a **flat-rate subscription fallback**:
+- **Interface**: Interacts via headless CLI invocation (`gh copilot`) or Language Server Protocol (LSP) session using existing user credentials (`gh auth`).
+- **Concurrency Management**: Implements concurrency throttling/serialization to accommodate Copilot's single-user interactive rate limits and prevent `429 Too Many Requests` during parallel `TaskBatch` execution.
+- **Sanitizer Reliance**: Relies on the Two-Tier JSON Sanitizer ([ADR 0004](docs/adr/0004-two-tier-json-sanitization.md)) and prompt-based schema instructions, as Copilot does not expose native constrained decoding.
+- Priority: Lower priority than `DirectDriver`.
