@@ -1,148 +1,221 @@
-# Contract Schemas
+# Schema Reference
 
-All schemas are strictly typed, serializable to JSON, and explicitly reference the target repository.
+All schemas live in `src/hermetic/schemas/` and are importable from `hermetic.schemas`. They are **Pydantic v2 models** — strictly typed, JSON-serializable, and frozen (immutable after construction).
 
-## A. `IssueContext` (Preloaded & Self-Contained)
+---
+
+## Context Schemas (`context.py`)
+
+### `IssueContext`
+
+The complete hermetic context bundle passed to AI compute nodes. Immutable once constructed.
+
+```python
+class IssueContext(BaseModel):
+    issue_id: str        # Source-system ID, e.g. "GH-42" or "JIRA-100"
+    title: str           # Issue title / one-liner
+    description: str     # Full issue body in Markdown
+    snippets: list[CodeSnippet]   # Code fragments from the repository
+    docs: list[ExternalDoc]       # External documentation pages
+```
+
+### `CodeSnippet`
+
+A slice of source code from a file, with a validated line range.
+
 ```python
 class CodeSnippet(BaseModel):
-    file_path: str
-    start_line: int
-    end_line: int
-    content: str
-    symbol_name: str | None = None
-    repo_name: str | None = None
-
-class ExternalDoc(BaseModel):
-    url_or_id: str
-    title: str
-    content: str
-    source_type: str
-
-class IssueContext(BaseModel):
-    schema_version: Literal["1.0"] = "1.0"
-    repo_name: str
-    repo_path: str
-    base_branch: str
-    issue_id: str
-    title: str
-    body: str
-    author: str
-    labels: list[str]
-    comments: list[str]
-    code_snippets: list[CodeSnippet]
-    referenced_docs: list[ExternalDoc]
-    user_clarifications: dict[str, str] = Field(default_factory=dict)
+    file_path: str    # Repo-relative path, e.g. "src/hermetic/schemas/context.py"
+    content: str      # Verbatim source text of the snippet
+    start_line: int   # 1-indexed first line (inclusive)
+    end_line: int     # 1-indexed last line (inclusive); must be >= start_line
 ```
 
-## B. `ImplementationPlan` & Interactive Refinement
+### `ExternalDoc`
+
+A piece of documentation fetched from an external URL.
+
+```python
+class ExternalDoc(BaseModel):
+    url: str             # Canonical URL of the document
+    content: str         # Markdown or plain-text body
+    title: str | None    # Optional document title
+```
+
+---
+
+## Plan Schemas (`plan.py`)
+
+### `ImplementationPlan`
+
+The top-level artifact produced by the `PlanningNode`. Batches are ordered: `batch[0]` executes first. Within each batch, tasks may run concurrently per their dependency graph.
+
+```python
+class ImplementationPlan(BaseModel):
+    plan_id: str              # UUID (auto-generated)
+    issue_id: str             # Must match IssueContext.issue_id
+    batches: list[TaskBatch]  # At least 1 batch required
+    iteration_context: PlanIterationContext
+```
+
+### `TaskBatch`
+
+An ordered set of `TaskItem`s forming one logical phase of the plan. Tasks within a batch whose dependencies are satisfied execute in parallel.
+
+```python
+class TaskBatch(BaseModel):
+    batch_id: str           # UUID (auto-generated)
+    description: str        # Human-readable label for this batch
+    tasks: list[TaskItem]   # At least 1 task required
+```
+
+### `TaskItem`
+
+A single atomic coding task. The `instruction` field is the complete prompt sent to the Implementation Node.
+
 ```python
 class TaskItem(BaseModel):
-    task_id: str
-    title: str
-    instructions: str
-    target_files: list[str]
-    expected_outcome: str
-    verification_command: str | None = None
-    repo_name: str | None = None
+    id: str               # Unique task ID (UUID or human-readable slug)
+    description: str      # One-line summary for display
+    instruction: str      # Full self-contained prompt for the Implementation Node
+    dependencies: list[str]  # IDs of TaskItems that must complete first (same batch only)
+```
 
-class TaskBatch(BaseModel):
-    batch_index: int
-    name: str
-    tasks: list[TaskItem]
+### `PlanIterationContext`
 
-class ImplementationPlan(BaseModel):
-    schema_version: Literal["1.0"] = "1.0"
-    repo_name: str
-    repo_path: str
-    base_branch: str
-    working_branch: str
-    issue_id: str
-    summary: str
-    architectural_notes: str
-    acceptance_criteria: list[str]
-    testing_strategy: str
-    batches: list[TaskBatch]
+Carries HITL feedback from one planning iteration to the next. Used by `PlanningNode` to construct revision prompts.
 
-class UserFeedback(BaseModel):
-    iteration: int
-    timestamp: str
-    feedback_text: str
-
+```python
 class PlanIterationContext(BaseModel):
-    issue_context: IssueContext
-    current_plan: ImplementationPlan
-    critic_critique: str | None = None
-    feedback_history: list[UserFeedback] = Field(default_factory=list)
+    iteration: int    # 0 = initial plan, 1+ = revised plan
+    feedback: str     # User or Critic feedback from the previous iteration
 ```
 
-## C. `TaskDeliverable` & `StructuredFileEdit`
+---
+
+## Deliverable Schemas (`deliverable.py`)
+
+### `TaskDeliverable`
+
+All file edits produced by one `TaskItem` execution.
+
 ```python
-class SearchReplaceBlock(BaseModel):
-    search_target: str
-    replacement: str
-
-class StructuredFileEdit(BaseModel):
-    file_path: str
-    action: Literal["CREATE", "MODIFY", "DELETE"]
-    new_content: str | None = None
-    blocks: list[SearchReplaceBlock] = Field(default_factory=list)
-
-class TaskRetryContext(BaseModel):
-    task_spec: TaskItem
-    attempt_number: int
-    failed_edits: list[StructuredFileEdit]
-    validation_error_output: str
-    previous_patch_diff: str | None = None
-
 class TaskDeliverable(BaseModel):
-    task_id: str
-    status: Literal["SUCCESS", "FAILED", "SKIPPED"]
-    repo_name: str | None = None
-    structured_edits: list[StructuredFileEdit] = Field(default_factory=list)
-    patch_diff: str = ""
-    test_output: str | None = None
-    retry_count: int = 0
-    error_message: str | None = None
-    input_tokens: int = 0
-    output_tokens: int = 0
-    latency_ms: int = 0
-
-class FullImplementationReport(BaseModel):
-    run_id: str
-    repo_name: str
-    repo_path: str
-    issue_id: str
-    branch_name: str
-    overall_status: Literal["PASSED", "FAILED_VERIFICATION", "INCOMPLETE"]
-    task_deliverables: list[TaskDeliverable]
-    total_latency_ms: int
-    token_usage_summary: dict[str, int]
+    task_id: str                      # ID of the TaskItem this satisfies
+    edits: list[StructuredFileEdit]   # May be empty for no-op tasks
+    explanation: str                  # Optional reasoning from the Implementation Node
 ```
 
-## D. `ResearchDossier` & `ReviewReport`
+### `StructuredFileEdit`
+
+A deterministic search-and-replace file edit. The Data Plane applier validates occurrence count before writing.
+
 ```python
-class ResearchDossier(BaseModel):
-    topic: str
-    repo_name: str
-    objective: str
-    findings: list[str]
-    tradeoffs_analyzed: list[dict[str, str]]
-    recommended_path: str
-    open_questions: list[str]
-    citations: list[str]
-
-class ReviewFinding(BaseModel):
-    severity: Literal["CRITICAL", "WARNING", "SUGGESTION"]
-    file_path: str
-    line_number: int | None
-    comment: str
-    suggested_fix: str | None
-
-class ReviewReport(BaseModel):
-    pr_id: str
-    repo_name: str
-    summary: str
-    passed: bool
-    findings: list[ReviewFinding]
-    test_coverage_assessment: str
+class StructuredFileEdit(BaseModel):
+    file_path: str            # Repo-relative path of the file to edit
+    search_string: str        # Exact string to locate (verbatim)
+    replacement_string: str   # Exact replacement for every matched occurrence
+    expected_occurrences: int # Applier rejects if this many occurrences are not found (default: 1)
 ```
+
+### `TaskRetryContext`
+
+Feedback fed back to the Implementation Node on a retry. Contains the error output so the model can self-correct.
+
+```python
+class TaskRetryContext(BaseModel):
+    task_id: str
+    error_message: str                        # Linter / test failure output
+    retry_count: int                          # 0-indexed; hard cap at 3
+    previous_deliverable: TaskDeliverable | None
+```
+
+### `FullImplementationReport`
+
+Aggregated result of an entire plan execution run. Also the data model for `full_report.html`.
+
+```python
+class FullImplementationReport(BaseModel):
+    plan_id: str
+    deliverables: list[TaskDeliverable]
+    failed_tasks: list[str]        # task_ids that exhausted all retries
+    summary: str
+    total_input_tokens: int
+    total_output_tokens: int
+```
+
+---
+
+## Review Schemas (`review.py`)
+
+### `ReviewFeedback`
+
+Structured verdict from the `CriticNode`. If `approved` is `False`, `comments` and `suggested_changes` are fed into the next `PlanIterationContext`.
+
+```python
+class ReviewFeedback(BaseModel):
+    approved: bool                          # True = plan accepted; False = revision required
+    comments: str                           # Explanation of the verdict
+    suggested_changes: list[StructuredFileEdit]  # Concrete edits the Critic recommends
+```
+
+---
+
+## Research Schemas (`research.py`)
+
+Used by the Research Micro-DAG (Story 7 — Autonomous Context Assembly).
+
+### `ResearchQuery`
+
+A structured codebase lookup request emitted by the Research Node.
+
+```python
+class ResearchQuery(BaseModel):
+    query: str                # Natural-language description of what to find
+    purpose: str              # Why this information is needed for the plan
+    search_regex: str | None  # Optional regex to run via grep/ripgrep
+    read_files: list[str]     # Repo-relative file paths to read in full
+```
+
+### `ResearchResult`
+
+The Data Plane's response to a `ResearchQuery`.
+
+```python
+class ResearchResult(BaseModel):
+    query: str                   # Echo of the original ResearchQuery.query
+    findings: str                # Assembled text of the retrieved content
+    token_count_estimate: int    # len(findings) // 4 approximation
+```
+
+---
+
+## Run Schemas (`run.py`)
+
+### `RunStatus`
+
+Type-safe enum for run lifecycle states used by the State Machine.
+
+```python
+class RunStatus(StrEnum):
+    PLANNING   = "planning"    # Initial state after hermetic plan
+    APPROVED   = "approved"    # After hermetic approve — ready for execution
+    EXECUTING  = "executing"   # hermetic implement is running
+    DONE       = "done"        # All batches succeeded
+    FAILED     = "failed"      # A batch exhausted all retries
+```
+
+> `RunStatus` is implemented in Story 5.
+
+---
+
+## Token Budget Constants
+
+Defined in `src/hermetic/data/etl/assembler.py`:
+
+| Constant | Value | Usage |
+|---|---|---|
+| `PLANNING_BUDGET` | 150,000 tokens | Context budget for Planning and Review nodes |
+| `IMPLEMENTATION_BUDGET` | 750,000 tokens | Context budget for Implementation nodes |
+
+Token estimates use the approximation `len(text) // 4`.
