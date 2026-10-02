@@ -77,16 +77,23 @@ def _utc_now_iso() -> str:
 class StateMachine:
     """Persists run state, context snapshots, and plan checkpoints in SQLite via aiosqlite."""
 
+    # Class-level set of resolved DB paths that have already had their schema applied.
+    # Using a class variable means a second StateMachine instance for the same DB file
+    # will not redundantly re-run the DDL (which is idempotent but wasteful).
+    _initialized_dbs: set[Path] = set()
+
     def __init__(self, db_path: Path | str) -> None:
-        self._db_path = Path(db_path)
+        self._db_path = Path(db_path).resolve()
 
     @asynccontextmanager
     async def _connect(self) -> AsyncIterator[aiosqlite.Connection]:
         self._db_path.parent.mkdir(parents=True, exist_ok=True)
         async with aiosqlite.connect(self._db_path) as db:
             await db.execute("PRAGMA foreign_keys = ON;")
-            await db.executescript(_SCHEMA)
-            await db.commit()
+            if self._db_path not in StateMachine._initialized_dbs:
+                await db.executescript(_SCHEMA)
+                await db.commit()
+                StateMachine._initialized_dbs.add(self._db_path)
             yield db
 
     async def create_run(
@@ -168,27 +175,38 @@ class StateMachine:
         plan_json = plan.model_dump_json()
 
         async with self._connect() as db:
-            async with db.execute(
-                "SELECT MAX(version) FROM plan_checkpoints WHERE run_id = ?",
-                (run_id,),
-            ) as cursor:
-                row = await cursor.fetchone()
-                current_max = row[0] if row and row[0] is not None else 0
-                next_version = current_max + 1
-
+            # Compute the next version number atomically inside the INSERT via a
+            # subquery.  SQLite serializes all writes, so no two concurrent callers
+            # can produce the same version for the same run_id.
             await db.execute(
                 """
                 INSERT INTO plan_checkpoints (checkpoint_id, run_id, version, plan_json, feedback, created_at)
-                VALUES (?, ?, ?, ?, ?, ?)
+                VALUES (
+                    ?,
+                    ?,
+                    (SELECT COALESCE(MAX(version), 0) + 1 FROM plan_checkpoints WHERE run_id = ?),
+                    ?,
+                    ?,
+                    ?
+                )
                 """,
-                (checkpoint_id, run_id, next_version, plan_json, feedback, now),
+                (checkpoint_id, run_id, run_id, plan_json, feedback, now),
             )
             await db.execute(
                 "UPDATE runs SET updated_at = ? WHERE run_id = ?",
                 (now, run_id),
             )
             await db.commit()
-        return next_version
+
+        # Read back the version we just inserted (still safe: checkpoint_id is
+        # our unique handle, so this is never ambiguous).
+        async with self._connect() as db:
+            async with db.execute(
+                "SELECT version FROM plan_checkpoints WHERE checkpoint_id = ?",
+                (checkpoint_id,),
+            ) as cursor:
+                row = await cursor.fetchone()
+                return int(row[0]) if row else 1
 
     async def get_latest_plan(
         self, run_id: str

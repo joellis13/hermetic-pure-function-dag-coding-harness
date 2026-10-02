@@ -48,12 +48,16 @@ class AntigravityDriver(AgentDriver):
         )
         agent = Agent(config)
         t0 = time.monotonic()
+        # Check for async context manager support explicitly rather than relying on
+        # a broad `except AttributeError`, which could swallow unrelated attribute
+        # errors from the response object and cause a spurious second API call.
         if hasattr(agent, "__aenter__"):
-            async with agent:
-                response = await agent.chat(prompt)
+            async with agent as a:
+                response = await a.chat(prompt)
                 text = await response.text()
-                usage = response.usage_metadata
+                usage = getattr(response, "usage_metadata", None)
         else:
+            # Older SDK versions that do not expose __aenter__/__aexit__.
             response = await agent.chat(prompt)
             text = await response.text()
             usage = getattr(response, "usage_metadata", None)

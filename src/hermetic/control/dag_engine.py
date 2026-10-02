@@ -9,47 +9,52 @@ Constraints (from ImplementationPlan.md):
 
 Public API:
     engine = DAGEngine(node_fn=my_async_function)
-    deliverables = await engine.execute_batch(batch)
+    results = await engine.execute_batch(batch)
 """
 from __future__ import annotations
 
 import asyncio
 from graphlib import CycleError, TopologicalSorter
-from typing import Callable, Awaitable
+from typing import Callable, Awaitable, Generic, TypeVar
 
 from hermetic.schemas.plan import TaskBatch, TaskItem
-from hermetic.schemas.deliverable import TaskDeliverable
 
 
-NodeFn = Callable[[TaskItem], Awaitable[TaskDeliverable]]
+T = TypeVar("T")
+
+NodeFn = Callable[[TaskItem], Awaitable[T]]
 
 
 class DAGValidationError(Exception):
     """Raised when the task dependency graph is invalid (cycle, missing dep)."""
 
 
-class DAGEngine:
+class DAGEngine(Generic[T]):
     """
     Executes a TaskBatch respecting intra-batch task dependencies.
+
+    Generic over T — the return type of the node function. In production,
+    T is TaskResult (from executor.py); in tests it may be TaskDeliverable
+    or any other async-callable return type.
 
     Batches are the unit of execution; sequential batch ordering is
     the caller's responsibility (see the State Machine in Story 5).
     """
 
-    def __init__(self, node_fn: NodeFn) -> None:
+    def __init__(self, node_fn: NodeFn[T]) -> None:
         """
         Args:
-            node_fn: An async callable that accepts a TaskItem and returns
-                     a TaskDeliverable. This will be the AntigravityDriver
-                     in production and a mock in tests.
+            node_fn: An async callable that accepts a TaskItem and returns T.
+                     This will be the AntigravityDriver-backed _node_fn in
+                     production and a mock in tests.
         """
         self._node_fn = node_fn
 
-    async def execute_batch(self, batch: TaskBatch) -> list[TaskDeliverable]:
+    async def execute_batch(self, batch: TaskBatch) -> list[T]:
         """
         Execute all tasks in `batch`, respecting their dependency graph.
 
-        Returns a list of TaskDeliverables in topological order.
+        Returns a list of T results in topological order.
         Raises DAGValidationError on cycle or missing dependency.
         Raises any exception from node_fn on task failure (no swallowing).
         """
@@ -60,8 +65,8 @@ class DAGEngine:
             sorter.add(task.id, *task.dependencies)
         sorter.prepare()
 
-        completed: dict[str, TaskDeliverable] = {}
-        deliverables_in_order: list[TaskDeliverable] = []
+        completed: dict[str, T] = {}
+        results_in_order: list[T] = []
 
         while sorter.is_active():
             ready_ids = list(sorter.get_ready())
@@ -73,9 +78,9 @@ class DAGEngine:
                 [tasks_by_id[tid] for tid in ready_ids]
             )
 
-            for tid, deliverable in zip(ready_ids, wave_results):
-                completed[tid] = deliverable
-                deliverables_in_order.append(deliverable)
+            for tid, result in zip(ready_ids, wave_results):
+                completed[tid] = result
+                results_in_order.append(result)
                 sorter.done(tid)
 
         if len(completed) != len(tasks_by_id):
@@ -84,11 +89,11 @@ class DAGEngine:
                 f"Tasks {missing} could not be executed due to unresolved dependencies."
             )
 
-        return deliverables_in_order
+        return results_in_order
 
-    async def _run_wave(self, tasks: list[TaskItem]) -> list[TaskDeliverable]:
+    async def _run_wave(self, tasks: list[TaskItem]) -> list[T]:
         """Run a set of ready tasks concurrently via asyncio.TaskGroup."""
-        results: list[TaskDeliverable] = [None] * len(tasks)  # type: ignore[list-item]
+        results: list[T] = [None] * len(tasks)  # type: ignore[list-item]
 
         async with asyncio.TaskGroup() as tg:
             for i, task in enumerate(tasks):

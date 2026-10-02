@@ -62,7 +62,9 @@ async def _run_plan(
 
     try:
         gh_client = GitHubClient(token)
-        issue = gh_client.fetch_issue(owner, github_repo, issue_number)
+        # fetch_issue uses urllib (synchronous blocking I/O); offload it to a
+        # thread so the asyncio event loop is not stalled during the HTTP round trip.
+        issue = await asyncio.to_thread(gh_client.fetch_issue, owner, github_repo, issue_number)
     except GitHubClientError as exc:
         console.print(f"[red]GitHub error: {exc}[/red]")
         raise typer.Exit(code=1) from exc
@@ -112,9 +114,9 @@ async def _run_plan(
                 planner_model=model,
                 driver_factory=lambda m: AntigravityDriver(m),
             )
-            feedback, _ = await critic.evaluate(plan, context)
-            verdict = "[green]APPROVED[/green]" if feedback.approved else "[yellow]REJECTED[/yellow]"
-            critic_summary = f"{verdict} — {feedback.comments}"
+            critic_feedback, _ = await critic.evaluate(plan, context)
+            verdict = "[green]APPROVED[/green]" if critic_feedback.approved else "[yellow]REJECTED[/yellow]"
+            critic_summary = f"{verdict} — {critic_feedback.comments}"
             console.print(Panel(critic_summary, title="Critic Evaluation", expand=False))
         except Exception as exc:
             critic_summary = f"[red]Critic error: {exc}[/red]"

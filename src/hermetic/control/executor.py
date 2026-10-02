@@ -28,6 +28,15 @@ class TaskExecutionError(Exception):
 
 
 @dataclass(frozen=True)
+class TaskResult:
+    """Bundles a TaskDeliverable with its token-usage metadata from one task execution."""
+
+    deliverable: TaskDeliverable
+    input_tokens: int
+    output_tokens: int
+
+
+@dataclass(frozen=True)
 class ExecutionResult:
     """Aggregated result of executing an entire ImplementationPlan."""
 
@@ -66,11 +75,11 @@ async def _execute_task_with_retry(
     base_branch: str,
     max_retries: int,
     worktree_base: Path | None,
-) -> tuple[TaskDeliverable, int, int]:
+) -> TaskResult:
     """
     Execute a single TaskItem with retry loop.
 
-    Returns (deliverable, input_tokens, output_tokens) on success.
+    Returns a TaskResult on success.
     Raises TaskExecutionError after all retries are exhausted.
     """
     attempt = 0
@@ -107,7 +116,11 @@ async def _execute_task_with_retry(
                     raise WorktreeError(message=lint_error, task_id=task.id)
                 wt.commit(f"hermetic: {task.id} (attempt {attempt})")
                 wt.merge_into_base()
-                return deliverable, total_input, total_output  # ✅ success
+                return TaskResult(  # ✅ success
+                    deliverable=deliverable,
+                    input_tokens=total_input,
+                    output_tokens=total_output,
+                )
             except (WorktreeError, EditApplicationError) as e:
                 last_error = str(e)
                 previous_deliverable = deliverable
@@ -150,26 +163,19 @@ async def execute_plan(
     total_input = 0
     total_output = 0
 
+    # Define _node_fn once, outside the batch loop.  impl_node, repo_root, etc. are
+    # outer function parameters and do not vary between batches, so no late-binding
+    # hazard exists and the default-argument capture trick is unnecessary.
+    async def _node_fn(task: TaskItem) -> TaskResult:
+        # Returns an immutable TaskResult — no shared mutable state.
+        return await _execute_task_with_retry(
+            task, impl_node, repo_root, base_branch, max_retries, worktree_base
+        )
+
     for batch in plan.batches:
-        batch_tokens: list[tuple[int, int]] = []
-
-        async def _node_fn(
-            task: TaskItem,
-            _impl_node: ImplementationNode = impl_node,
-            _repo_root: Path = repo_root,
-            _base_branch: str = base_branch,
-            _max_retries: int = max_retries,
-            _worktree_base: Path | None = worktree_base,
-        ) -> TaskDeliverable:
-            deliverable, inp, out = await _execute_task_with_retry(
-                task, _impl_node, _repo_root, _base_branch, _max_retries, _worktree_base
-            )
-            batch_tokens.append((inp, out))
-            return deliverable
-
-        engine = DAGEngine(_node_fn)
+        engine: DAGEngine[TaskResult] = DAGEngine(_node_fn)
         try:
-            batch_deliverables = await engine.execute_batch(batch)
+            batch_results: list[TaskResult] = await engine.execute_batch(batch)
         except TaskExecutionError:
             raise
         except BaseExceptionGroup as eg:
@@ -190,10 +196,10 @@ async def execute_plan(
                     raise err
             raise
 
-        all_deliverables.extend(batch_deliverables)
-        for inp, out in batch_tokens:
-            total_input += inp
-            total_output += out
+        for result in batch_results:
+            all_deliverables.append(result.deliverable)
+            total_input += result.input_tokens
+            total_output += result.output_tokens
 
     return ExecutionResult(
         deliverables=all_deliverables,

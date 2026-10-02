@@ -3,6 +3,7 @@ HTML Renderer — pure functions for rendering ImplementationPlan and FullImplem
 """
 from __future__ import annotations
 
+from functools import lru_cache
 from pathlib import Path
 
 from jinja2 import Environment, FileSystemLoader, select_autoescape
@@ -14,6 +15,7 @@ from hermetic.schemas.plan import ImplementationPlan
 _TEMPLATES_DIR = Path(__file__).parent / "templates"
 
 
+@lru_cache(maxsize=1)
 def _env() -> Environment:
     return Environment(
         loader=FileSystemLoader(str(_TEMPLATES_DIR)),

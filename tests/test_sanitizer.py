@@ -62,6 +62,20 @@ class TestProseStripping:
         raw = 'Here is the result:\n[{"a": 1,}, {"b": 2,},]\nHope this helps!'
         assert _parsed(raw) == [{"a": 1}, {"b": 2}]
 
+    def test_sibling_object_then_array_picks_array(self):
+        """When a JSON object appears before a JSON array at the same nesting level,
+        the sanitizer's 'prose placeholder brace before array' branch fires —
+        the object is treated as a prose-style brace and the array is extracted."""
+        raw = '{"a": 1} [1, 2, 3]'
+        assert _parsed(raw) == [1, 2, 3]
+
+    def test_sibling_array_then_object_picks_object(self):
+        """When a JSON array appears before a JSON object at the same nesting level,
+        the sanitizer's 'prose citation bracket before object' branch fires —
+        the array is treated as a prose-style bracket and the object is extracted."""
+        raw = '[1, 2] {"a": 1}'
+        assert _parsed(raw) == {"a": 1}
+
 
 class TestTrailingCommaRemoval:
     def test_trailing_comma_in_object(self):
