@@ -11,11 +11,14 @@ from rich.table import Table
 from hermetic.client.github import GitHubClient, GitHubClientError
 from hermetic.compute.critic import CriticNode
 from hermetic.compute.driver import AntigravityDriver
+from hermetic.compute.implementation_node import ImplementationNode
 from hermetic.compute.planning_node import PlanningNode
+from hermetic.control.executor import ExecutionResult, TaskExecutionError, execute_plan
 from hermetic.control.state_machine import StateMachine
 from hermetic.data.etl.assembler import ContextAssembler
-from hermetic.data.renderer import render_plan_html, write_html
+from hermetic.data.renderer import render_plan_html, render_report_html, write_html
 from hermetic.schemas.context import CodeSnippet, IssueContext
+from hermetic.schemas.deliverable import FullImplementationReport
 from hermetic.schemas.plan import ImplementationPlan, PlanIterationContext
 from hermetic.schemas.run import RunStatus
 
@@ -349,3 +352,162 @@ def approve_command(
             version=version,
         )
     )
+
+
+async def _run_implement(
+    run_id: str,
+    repo: Path,
+    model: str,
+    db_path: Path,
+    max_retries: int,
+    dry_run: bool,
+) -> None:
+    repo_resolved = repo.resolve()
+    sm = StateMachine(db_path)
+    run = await sm.get_run(run_id)
+    if run is None:
+        console.print(f"[red]Error: Run {run_id} not found.[/red]")
+        raise typer.Exit(code=1)
+
+    if run.status != RunStatus.APPROVED.value:
+        console.print(
+            f"[red]Error: Cannot execute run in status '{run.status}'. "
+            f"Run must be in 'approved' status (use 'hermetic approve {run_id}' first).[/red]"
+        )
+        raise typer.Exit(code=1)
+
+    latest = await sm.get_latest_plan(run_id)
+    if latest is None:
+        console.print(f"[red]Error: No plan checkpoints found for run {run_id}.[/red]")
+        raise typer.Exit(code=1)
+    plan, plan_version = latest
+
+    if dry_run:
+        console.print(
+            Panel(
+                f"[bold]Run ID:[/bold] {run_id}\n"
+                f"[bold]Plan Version:[/bold] {plan_version}\n"
+                f"[bold]Batches:[/bold] {len(plan.batches)}\n"
+                f"[bold]Tasks:[/bold] {sum(len(b.tasks) for b in plan.batches)}\n"
+                "[yellow]Dry run mode: skipped worktree writes and execution.[/yellow]",
+                title="[cyan]Dry Run Complete[/cyan]",
+                expand=False,
+            )
+        )
+        return
+
+    await sm.update_run_status(run_id, RunStatus.EXECUTING)
+    console.print(
+        Panel(
+            f"[bold]Run ID:[/bold] {run_id}\n"
+            f"[bold]Plan Version:[/bold] {plan_version}\n"
+            f"[bold]Model:[/bold] {model}\n"
+            f"[bold]Max Retries:[/bold] {max_retries}\n"
+            f"[bold]Dry Run:[/bold] {dry_run}",
+            title="[cyan]Starting Execution[/cyan]",
+            expand=False,
+        )
+    )
+
+    impl_node = ImplementationNode(AntigravityDriver(model))
+    repo_path = Path(run.repo_path)
+    base_branch = run.base_branch
+
+    try:
+        result: ExecutionResult = await execute_plan(
+            plan,
+            repo_path,
+            base_branch,
+            impl_node,
+            max_retries=max_retries,
+        )
+    except TaskExecutionError as exc:
+        await sm.update_run_status(run_id, RunStatus.FAILED)
+        console.print(
+            Panel(
+                f"[red]Task '{exc.task_id}' failed after all retries.[/red]\n{exc.message}",
+                title="[red]Execution Failed[/red]",
+                expand=False,
+            )
+        )
+        # Save partial report
+        partial_report = FullImplementationReport(
+            plan_id=plan.plan_id,
+            deliverables=[],
+            failed_tasks=[exc.task_id],
+            summary=f"Run failed: task '{exc.task_id}' exhausted all retries.",
+        )
+        await sm.save_report(run_id, partial_report)
+        raise typer.Exit(code=1) from exc
+    except Exception as exc:
+        await sm.update_run_status(run_id, RunStatus.FAILED)
+        console.print(f"[red]Unexpected error: {exc}[/red]")
+        raise typer.Exit(code=1) from exc
+
+    # Save deliverables
+    for deliverable in result.deliverables:
+        batch_idx = next(
+            (bi for bi, b in enumerate(plan.batches) if any(t.id == deliverable.task_id for t in b.tasks)),
+            0,
+        )
+        await sm.save_deliverable(run_id, batch_index=batch_idx, deliverable=deliverable)
+
+    # Build and save the full report
+    total_tasks = sum(len(b.tasks) for b in plan.batches)
+    report = FullImplementationReport(
+        plan_id=plan.plan_id,
+        deliverables=result.deliverables,
+        failed_tasks=result.failed_tasks,
+        total_input_tokens=result.total_input_tokens,
+        total_output_tokens=result.total_output_tokens,
+        summary=(
+            f"Executed {len(result.deliverables)}/{total_tasks} tasks successfully "
+            f"across {len(plan.batches)} batch(es)."
+        ),
+    )
+    await sm.update_run_status(run_id, RunStatus.DONE)
+    await sm.save_report(run_id, report)
+
+    # Render and write full_report.html
+    out_dir = repo_resolved / ".harness" / "runs" / run_id
+    out_dir.mkdir(parents=True, exist_ok=True)
+    html_path = out_dir / "full_report.html"
+    html = render_report_html(report)
+    write_html(html, html_path)
+
+    console.print(
+        Panel(
+            f"[bold]Run ID:[/bold] {run_id}\n"
+            f"[bold]Status:[/bold] [green]DONE[/green]\n"
+            f"[bold]Deliverables:[/bold] {len(result.deliverables)}/{total_tasks}\n"
+            f"[bold]Input Tokens:[/bold] {result.total_input_tokens:,}\n"
+            f"[bold]Output Tokens:[/bold] {result.total_output_tokens:,}\n"
+            f"[bold]Report:[/bold] {html_path}",
+            title="[green]Execution Complete[/green]",
+            expand=False,
+        )
+    )
+
+
+@app.command(name="implement")
+def implement_command(
+    run_id: str = typer.Argument(..., help="Run ID (UUID)"),
+    repo: Path = typer.Option(Path("."), help="Target git repository root"),
+    model: str = typer.Option("gemini-flash", help="Implementation model (fast model recommended)"),
+    db: Path | None = typer.Option(None, help="SQLite state DB path"),
+    max_retries: int = typer.Option(3, help="Max retries per task (0-3)"),
+    dry_run: bool = typer.Option(False, "--dry-run", help="Parse plan + validate but skip worktree writes"),
+) -> None:
+    """Execute an approved ImplementationPlan across ephemeral git worktrees."""
+    db_path = db or (repo.resolve() / ".harness" / "state.db")
+    asyncio.run(
+        _run_implement(
+            run_id=run_id,
+            repo=repo,
+            model=model,
+            db_path=db_path,
+            max_retries=max_retries,
+            dry_run=dry_run,
+        )
+    )
+

@@ -11,8 +11,10 @@ from typer.testing import CliRunner
 from hermetic.cli.app import app
 from hermetic.client.github import GitHubIssue
 from hermetic.compute.driver import NodeExecutionMetadata
+from hermetic.control.executor import ExecutionResult, TaskExecutionError
 from hermetic.control.state_machine import StateMachine
 from hermetic.schemas.context import CodeSnippet, IssueContext
+from hermetic.schemas.deliverable import TaskDeliverable
 from hermetic.schemas.plan import ImplementationPlan, TaskBatch, TaskItem
 from hermetic.schemas.review import ReviewFeedback
 from hermetic.schemas.run import RunStatus
@@ -413,3 +415,145 @@ class TestCli:
         run = asyncio.run(sm.get_run(run_id))
         assert run is not None
         assert run.status == RunStatus.PLANNING.value
+
+
+@pytest.fixture
+def approved_run(fake_repo: Path, sample_plan: ImplementationPlan) -> tuple[str, Path]:
+    """Create an APPROVED run in the state DB. Returns (run_id, db_path)."""
+    db_path = fake_repo / ".harness" / "state.db"
+    sm = StateMachine(db_path)
+    context = IssueContext(
+        issue_id="GH-42",
+        title="Feature 42",
+        description="Body",
+    )
+    run_id = asyncio.run(
+        sm.create_run(
+            issue_id="GH-42",
+            repo_path=str(fake_repo),
+            base_branch="main",
+            context=context,
+        )
+    )
+    asyncio.run(sm.save_plan(run_id, sample_plan))
+    asyncio.run(sm.update_run_status(run_id, RunStatus.APPROVED))
+    return run_id, db_path
+
+
+class TestImplementCommand:
+    def test_implement_command_rejects_non_approved_run(
+        self, fake_repo: Path, sample_plan: ImplementationPlan
+    ) -> None:
+        db_path = fake_repo / ".harness" / "state.db"
+        sm = StateMachine(db_path)
+        context = IssueContext(issue_id="GH-42", title="Feature 42", description="Body")
+        run_id = asyncio.run(
+            sm.create_run(
+                issue_id="GH-42",
+                repo_path=str(fake_repo),
+                base_branch="main",
+                context=context,
+            )
+        )
+        asyncio.run(sm.save_plan(run_id, sample_plan))
+
+        result = runner.invoke(app, ["implement", run_id, "--repo", str(fake_repo)])
+        assert result.exit_code == 1
+        assert "Cannot execute run in status 'planning'" in result.output
+
+    def test_implement_command_rejects_unknown_run_id(self, fake_repo: Path) -> None:
+        result = runner.invoke(
+            app,
+            ["implement", "00000000-0000-0000-0000-000000000000", "--repo", str(fake_repo)],
+        )
+        assert result.exit_code == 1
+        assert "not found" in result.output.lower()
+
+    def test_implement_command_happy_path(
+        self, fake_repo: Path, approved_run: tuple[str, Path]
+    ) -> None:
+        run_id, _ = approved_run
+        mock_result = ExecutionResult(
+            deliverables=[TaskDeliverable(task_id="task-1", edits=[], explanation="done")],
+            failed_tasks=[],
+            total_input_tokens=100,
+            total_output_tokens=50,
+        )
+        with patch("hermetic.cli.app.execute_plan", new=AsyncMock(return_value=mock_result)):
+            result = runner.invoke(app, ["implement", run_id, "--repo", str(fake_repo)])
+
+        assert result.exit_code == 0, result.output
+        html_path = fake_repo / ".harness" / "runs" / run_id / "full_report.html"
+        assert html_path.exists()
+        assert "plan-cli-1" in html_path.read_text(encoding="utf-8")
+
+    def test_implement_command_transitions_status_to_done(
+        self, fake_repo: Path, approved_run: tuple[str, Path]
+    ) -> None:
+        run_id, db_path = approved_run
+        mock_result = ExecutionResult(
+            deliverables=[TaskDeliverable(task_id="task-1", edits=[], explanation="done")],
+            failed_tasks=[],
+            total_input_tokens=100,
+            total_output_tokens=50,
+        )
+        with patch("hermetic.cli.app.execute_plan", new=AsyncMock(return_value=mock_result)):
+            result = runner.invoke(app, ["implement", run_id, "--repo", str(fake_repo)])
+
+        assert result.exit_code == 0
+        sm = StateMachine(db_path)
+        run = asyncio.run(sm.get_run(run_id))
+        assert run is not None
+        assert run.status == RunStatus.DONE.value
+
+    def test_implement_command_transitions_to_failed_on_error(
+        self, fake_repo: Path, approved_run: tuple[str, Path]
+    ) -> None:
+        run_id, db_path = approved_run
+        with patch(
+            "hermetic.cli.app.execute_plan",
+            new=AsyncMock(side_effect=TaskExecutionError("task-1", "oops")),
+        ):
+            result = runner.invoke(app, ["implement", run_id, "--repo", str(fake_repo)])
+
+        assert result.exit_code == 1
+        assert "Execution Failed" in result.output
+        sm = StateMachine(db_path)
+        run = asyncio.run(sm.get_run(run_id))
+        assert run is not None
+        assert run.status == RunStatus.FAILED.value
+
+    def test_implement_command_prints_report_path(
+        self, fake_repo: Path, approved_run: tuple[str, Path]
+    ) -> None:
+        run_id, _ = approved_run
+        mock_result = ExecutionResult(
+            deliverables=[TaskDeliverable(task_id="task-1", edits=[], explanation="done")],
+            failed_tasks=[],
+            total_input_tokens=100,
+            total_output_tokens=50,
+        )
+        with patch("hermetic.cli.app.execute_plan", new=AsyncMock(return_value=mock_result)):
+            result = runner.invoke(app, ["implement", run_id, "--repo", str(fake_repo)])
+
+        assert result.exit_code == 0
+        assert "full_report.html" in result.output
+
+    def test_implement_command_dry_run_flag(
+        self, fake_repo: Path, approved_run: tuple[str, Path]
+    ) -> None:
+        run_id, db_path = approved_run
+        with patch("hermetic.cli.app.execute_plan", new=AsyncMock()) as mock_execute:
+            result = runner.invoke(
+                app, ["implement", run_id, "--repo", str(fake_repo), "--dry-run"]
+            )
+
+        assert result.exit_code == 0
+        assert mock_execute.call_count == 0
+        assert "Dry run" in result.output
+        # Run remains approved
+        sm = StateMachine(db_path)
+        run = asyncio.run(sm.get_run(run_id))
+        assert run is not None
+        assert run.status == RunStatus.APPROVED.value
+

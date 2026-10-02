@@ -8,6 +8,7 @@ import pytest
 
 from hermetic.control.state_machine import RunState, StateMachine
 from hermetic.schemas.context import CodeSnippet, IssueContext
+from hermetic.schemas.deliverable import TaskDeliverable
 from hermetic.schemas.plan import ImplementationPlan, TaskBatch, TaskItem
 from hermetic.schemas.run import RunStatus
 
@@ -291,3 +292,83 @@ class TestStateMachine:
         assert rehydrated.description == sample_context.description
         assert len(rehydrated.snippets) == len(sample_context.snippets)
         assert rehydrated.snippets[0].file_path == sample_context.snippets[0].file_path
+
+
+class TestStateMachineDeliverables:
+    async def test_save_and_list_deliverables(
+        self, tmp_path: Path, sample_context: IssueContext, sample_plan: ImplementationPlan
+    ) -> None:
+        db_path = tmp_path / "test.db"
+        sm = StateMachine(db_path)
+        run_id = await sm.create_run("GH-99", "/repo", "main", sample_context)
+
+        d1 = TaskDeliverable(task_id="t1", edits=[], explanation="first")
+        d2 = TaskDeliverable(task_id="t2", edits=[], explanation="second")
+        d3 = TaskDeliverable(task_id="t3", edits=[], explanation="third")
+
+        await sm.save_deliverable(run_id, batch_index=0, deliverable=d1)
+        await sm.save_deliverable(run_id, batch_index=0, deliverable=d2)
+        await sm.save_deliverable(run_id, batch_index=1, deliverable=d3)
+
+        results = await sm.list_deliverables(run_id)
+        assert len(results) == 3
+        assert results[0].task_id == "t1"
+        assert results[1].task_id == "t2"
+        assert results[2].task_id == "t3"
+
+    async def test_save_and_get_report(
+        self, tmp_path: Path, sample_context: IssueContext, sample_plan: ImplementationPlan
+    ) -> None:
+        from hermetic.schemas.deliverable import FullImplementationReport
+
+        db_path = tmp_path / "test.db"
+        sm = StateMachine(db_path)
+        run_id = await sm.create_run("GH-99", "/repo", "main", sample_context)
+
+        report = FullImplementationReport(
+            plan_id="plan-99",
+            deliverables=[],
+            failed_tasks=[],
+            summary="All done",
+            total_input_tokens=100,
+            total_output_tokens=50,
+        )
+        await sm.save_report(run_id, report)
+
+        retrieved = await sm.get_report(run_id)
+        assert retrieved is not None
+        assert retrieved.plan_id == "plan-99"
+        assert retrieved.summary == "All done"
+        assert retrieved.total_input_tokens == 100
+
+    async def test_get_report_returns_none_when_missing(
+        self, tmp_path: Path, sample_context: IssueContext
+    ) -> None:
+        db_path = tmp_path / "test.db"
+        sm = StateMachine(db_path)
+        run_id = await sm.create_run("GH-99", "/repo", "main", sample_context)
+        result = await sm.get_report(run_id)
+        assert result is None
+
+    async def test_deliverables_isolated_by_run_id(
+        self, tmp_path: Path, sample_context: IssueContext
+    ) -> None:
+        db_path = tmp_path / "test.db"
+        sm = StateMachine(db_path)
+        run1 = await sm.create_run("GH-1", "/repo", "main", sample_context)
+        run2 = await sm.create_run("GH-2", "/repo", "main", sample_context)
+
+        d1 = TaskDeliverable(task_id="task-run1", edits=[], explanation="run1")
+        d2 = TaskDeliverable(task_id="task-run2", edits=[], explanation="run2")
+
+        await sm.save_deliverable(run1, batch_index=0, deliverable=d1)
+        await sm.save_deliverable(run2, batch_index=0, deliverable=d2)
+
+        run1_deliverables = await sm.list_deliverables(run1)
+        assert len(run1_deliverables) == 1
+        assert run1_deliverables[0].task_id == "task-run1"
+
+        run2_deliverables = await sm.list_deliverables(run2)
+        assert len(run2_deliverables) == 1
+        assert run2_deliverables[0].task_id == "task-run2"
+

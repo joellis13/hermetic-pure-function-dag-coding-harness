@@ -1,5 +1,6 @@
 from hermetic.compute.driver import AgentDriver, AntigravityDriver, MockDriver, NodeExecutionMetadata
 from hermetic.compute.critic import CriticNode
+from hermetic.compute.implementation_node import ImplementationError, ImplementationNode
 from hermetic.compute.planning_node import PlanningError, PlanningNode
 
 __all__ = [
@@ -8,6 +9,8 @@ __all__ = [
     "MockDriver",
     "NodeExecutionMetadata",
     "CriticNode",
+    "ImplementationError",
+    "ImplementationNode",
     "PlanningError",
     "PlanningNode",
 ]

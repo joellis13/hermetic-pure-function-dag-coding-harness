@@ -11,6 +11,7 @@ import uuid
 import aiosqlite
 
 from hermetic.schemas.context import IssueContext
+from hermetic.schemas.deliverable import FullImplementationReport, TaskDeliverable
 from hermetic.schemas.plan import ImplementationPlan
 from hermetic.schemas.run import RunStatus
 
@@ -48,6 +49,23 @@ CREATE TABLE IF NOT EXISTS plan_checkpoints (
     feedback      TEXT NOT NULL DEFAULT '',
     created_at    TEXT NOT NULL,
     UNIQUE(run_id, version)
+);
+
+CREATE TABLE IF NOT EXISTS task_deliverables (
+    deliverable_id TEXT PRIMARY KEY,
+    run_id         TEXT NOT NULL REFERENCES runs(run_id),
+    batch_index    INTEGER NOT NULL,
+    task_id        TEXT NOT NULL,
+    deliverable_json TEXT NOT NULL,
+    attempt        INTEGER NOT NULL DEFAULT 0,
+    created_at     TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS run_reports (
+    report_id   TEXT PRIMARY KEY,
+    run_id      TEXT NOT NULL REFERENCES runs(run_id),
+    report_json TEXT NOT NULL,
+    created_at  TEXT NOT NULL
 );
 """
 
@@ -240,3 +258,73 @@ class StateMachine:
                 if row is None:
                     return None
                 return row[0]
+
+    async def save_deliverable(
+        self,
+        run_id: str,
+        batch_index: int,
+        deliverable: TaskDeliverable,
+        attempt: int = 0,
+    ) -> None:
+        """Persist a task deliverable result for a run."""
+        deliverable_id = str(uuid.uuid4())
+        now = _utc_now_iso()
+        async with self._connect() as db:
+            await db.execute(
+                """
+                INSERT INTO task_deliverables
+                    (deliverable_id, run_id, batch_index, task_id, deliverable_json, attempt, created_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    deliverable_id,
+                    run_id,
+                    batch_index,
+                    deliverable.task_id,
+                    deliverable.model_dump_json(),
+                    attempt,
+                    now,
+                ),
+            )
+            await db.commit()
+
+    async def list_deliverables(self, run_id: str) -> list[TaskDeliverable]:
+        """List all deliverables for a run, ordered by batch_index and created_at."""
+        async with self._connect() as db:
+            async with db.execute(
+                """
+                SELECT deliverable_json FROM task_deliverables
+                WHERE run_id = ?
+                ORDER BY batch_index ASC, created_at ASC
+                """,
+                (run_id,),
+            ) as cursor:
+                rows = await cursor.fetchall()
+                return [TaskDeliverable.model_validate_json(row[0]) for row in rows]
+
+    async def save_report(self, run_id: str, report: FullImplementationReport) -> None:
+        """Persist the FullImplementationReport for a completed run."""
+        report_id = str(uuid.uuid4())
+        now = _utc_now_iso()
+        async with self._connect() as db:
+            await db.execute(
+                """
+                INSERT INTO run_reports (report_id, run_id, report_json, created_at)
+                VALUES (?, ?, ?, ?)
+                """,
+                (report_id, run_id, report.model_dump_json(), now),
+            )
+            await db.commit()
+
+    async def get_report(self, run_id: str) -> FullImplementationReport | None:
+        """Retrieve the FullImplementationReport for a run, or None if not saved yet."""
+        async with self._connect() as db:
+            async with db.execute(
+                "SELECT report_json FROM run_reports WHERE run_id = ? ORDER BY created_at DESC LIMIT 1",
+                (run_id,),
+            ) as cursor:
+                row = await cursor.fetchone()
+                if row is None:
+                    return None
+                return FullImplementationReport.model_validate_json(row[0])
+
