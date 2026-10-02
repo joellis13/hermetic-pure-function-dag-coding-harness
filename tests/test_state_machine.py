@@ -97,6 +97,26 @@ class TestStateMachine:
         run = await sm.get_run("non-existent-run-id")
         assert run is None
 
+    async def test_two_instances_same_db_both_work(
+        self, tmp_path: Path, sample_context: IssueContext
+    ) -> None:
+        """Regression: two StateMachine instances for the same DB path must both be
+        able to write, regardless of which instance first applied the schema.
+        Previously a class-level cache would mark the DB as initialized after the
+        first instance, but a fresh instance had no guarantee it would see the tables.
+        """
+        db_path = tmp_path / "shared.db"
+        sm1 = StateMachine(db_path)
+        sm2 = StateMachine(db_path)
+
+        run_id_1 = await sm1.create_run("GH-1", "/repo", "main", sample_context)
+        run_id_2 = await sm2.create_run("GH-2", "/repo", "main", sample_context)
+
+        run1 = await sm1.get_run(run_id_1)
+        run2 = await sm2.get_run(run_id_2)
+        assert run1 is not None and run1.issue_id == "GH-1"
+        assert run2 is not None and run2.issue_id == "GH-2"
+
     async def test_save_plan_first_version_is_one(
         self,
         tmp_path: Path,

@@ -38,10 +38,13 @@ class TaskResult:
 
 @dataclass(frozen=True)
 class ExecutionResult:
-    """Aggregated result of executing an entire ImplementationPlan."""
+    """Aggregated result of executing an entire ImplementationPlan.
+
+    Only returned on full success — `execute_plan` raises `TaskExecutionError` on any
+    task failure (hard-stop). Failed task identity is carried by the exception, not here.
+    """
 
     deliverables: list[TaskDeliverable]
-    failed_tasks: list[str]
     total_input_tokens: int
     total_output_tokens: int
 
@@ -203,7 +206,6 @@ async def execute_plan(
 
     return ExecutionResult(
         deliverables=all_deliverables,
-        failed_tasks=[],
         total_input_tokens=total_input,
         total_output_tokens=total_output,
     )

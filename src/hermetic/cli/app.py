@@ -459,7 +459,7 @@ async def _run_implement(
     report = FullImplementationReport(
         plan_id=plan.plan_id,
         deliverables=result.deliverables,
-        failed_tasks=result.failed_tasks,
+        failed_tasks=[],  # execute_plan only returns on full success; failures raise TaskExecutionError
         total_input_tokens=result.total_input_tokens,
         total_output_tokens=result.total_output_tokens,
         summary=(

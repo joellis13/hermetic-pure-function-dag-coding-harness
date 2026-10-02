@@ -46,6 +46,9 @@ class AntigravityDriver(AgentDriver):
             system_instructions=system,
             api_key=self._api_key,
         )
+        # Agent is constructed per-call because LocalAgentConfig embeds the system prompt.
+        # Nodes share a driver instance but supply different system prompts per invocation,
+        # so reusing a single Agent across calls is not possible with this SDK design.
         agent = Agent(config)
         t0 = time.monotonic()
         # Check for async context manager support explicitly rather than relying on

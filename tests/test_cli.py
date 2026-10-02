@@ -475,7 +475,6 @@ class TestImplementCommand:
         run_id, _ = approved_run
         mock_result = ExecutionResult(
             deliverables=[TaskDeliverable(task_id="task-1", edits=[], explanation="done")],
-            failed_tasks=[],
             total_input_tokens=100,
             total_output_tokens=50,
         )
@@ -493,7 +492,6 @@ class TestImplementCommand:
         run_id, db_path = approved_run
         mock_result = ExecutionResult(
             deliverables=[TaskDeliverable(task_id="task-1", edits=[], explanation="done")],
-            failed_tasks=[],
             total_input_tokens=100,
             total_output_tokens=50,
         )
@@ -529,7 +527,6 @@ class TestImplementCommand:
         run_id, _ = approved_run
         mock_result = ExecutionResult(
             deliverables=[TaskDeliverable(task_id="task-1", edits=[], explanation="done")],
-            failed_tasks=[],
             total_input_tokens=100,
             total_output_tokens=50,
         )

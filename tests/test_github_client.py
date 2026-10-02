@@ -143,6 +143,31 @@ class TestGitHubClient:
 
         assert "Repository not found" in str(exc_info.value)
 
+    def test_fetch_issue_uses_request_timeout(self) -> None:
+        """urlopen must be called with the module-level timeout constant (30s)."""
+        from hermetic.client.github import _REQUEST_TIMEOUT_SECONDS
+
+        payload = {
+            "data": {
+                "repository": {
+                    "issue": {
+                        "title": "T",
+                        "body": "B",
+                        "url": "https://github.com/o/r/issues/1",
+                    }
+                }
+            }
+        }
+        client = GitHubClient(token="ghp_token")
+        with patch("urllib.request.urlopen", return_value=_make_mock_response(200, payload)) as mock_urlopen:
+            client.fetch_issue("o", "r", 1)
+
+        _, call_kwargs = mock_urlopen.call_args
+        assert call_kwargs.get("timeout") == _REQUEST_TIMEOUT_SECONDS, (
+            f"Expected urlopen timeout={_REQUEST_TIMEOUT_SECONDS}, "
+            f"got {call_kwargs.get('timeout')!r}"
+        )
+
     @live
     def test_live_fetch_issue(self) -> None:
         token = os.environ["GITHUB_TOKEN"]

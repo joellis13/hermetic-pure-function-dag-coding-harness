@@ -77,23 +77,21 @@ def _utc_now_iso() -> str:
 class StateMachine:
     """Persists run state, context snapshots, and plan checkpoints in SQLite via aiosqlite."""
 
-    # Class-level set of resolved DB paths that have already had their schema applied.
-    # Using a class variable means a second StateMachine instance for the same DB file
-    # will not redundantly re-run the DDL (which is idempotent but wasteful).
-    _initialized_dbs: set[Path] = set()
-
     def __init__(self, db_path: Path | str) -> None:
         self._db_path = Path(db_path).resolve()
+        # Instance-level flag: schema is applied once per StateMachine instance.
+        # The DDL uses CREATE TABLE IF NOT EXISTS so re-running on a new instance is safe.
+        self._schema_applied: bool = False
 
     @asynccontextmanager
     async def _connect(self) -> AsyncIterator[aiosqlite.Connection]:
         self._db_path.parent.mkdir(parents=True, exist_ok=True)
         async with aiosqlite.connect(self._db_path) as db:
             await db.execute("PRAGMA foreign_keys = ON;")
-            if self._db_path not in StateMachine._initialized_dbs:
+            if not self._schema_applied:
                 await db.executescript(_SCHEMA)
                 await db.commit()
-                StateMachine._initialized_dbs.add(self._db_path)
+                self._schema_applied = True
             yield db
 
     async def create_run(

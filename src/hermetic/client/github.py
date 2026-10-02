@@ -26,6 +26,7 @@ class GitHubClientError(Exception):
 
 
 _GRAPHQL_ENDPOINT = "https://api.github.com/graphql"
+_REQUEST_TIMEOUT_SECONDS: int = 30  # Applied to every urlopen call to prevent indefinite hangs
 _ISSUE_QUERY = """
 query($owner: String!, $repo: String!, $number: Int!) {
   repository(owner: $owner, name: $repo) {
@@ -69,7 +70,7 @@ class GitHubClient:
         )
 
         try:
-            with urllib.request.urlopen(req) as resp:
+            with urllib.request.urlopen(req, timeout=_REQUEST_TIMEOUT_SECONDS) as resp:
                 resp_bytes = resp.read()
         except urllib.error.HTTPError as exc:
             raise GitHubClientError(

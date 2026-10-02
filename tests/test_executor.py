@@ -8,7 +8,7 @@ from unittest.mock import patch
 import pytest
 
 from hermetic.compute.driver import NodeExecutionMetadata
-from hermetic.compute.implementation_node import ImplementationError, ImplementationNode
+from hermetic.compute.implementation_node import ImplementationError
 from hermetic.control.executor import (
     ExecutionResult,
     TaskExecutionError,
@@ -34,8 +34,12 @@ def git_repo(tmp_path: Path) -> Path:
     return repo
 
 
-class MockImplementationNode(ImplementationNode):
-    """Test double that returns pre-configured deliverables."""
+class MockImplementationNode:
+    """Standalone duck-typed test double for ImplementationNode.
+
+    Does not inherit from ImplementationNode — execute_plan calls .implement() via
+    duck typing, not isinstance, so no parent class is required.
+    """
 
     def __init__(
         self,
@@ -83,7 +87,6 @@ class TestExecutor:
         result = await execute_plan(plan, git_repo, "main", mock_node)
         assert len(result.deliverables) == 1
         assert result.deliverables[0].task_id == "task-1"
-        assert result.failed_tasks == []
         assert (git_repo / "target.py").read_text(encoding="utf-8").startswith("# edited")
 
     async def test_execute_plan_sequential_batches(self, git_repo: Path) -> None:
@@ -122,7 +125,6 @@ class TestExecutor:
         mock_node = MockImplementationNode(deliverables_by_task={"task-1": d1, "task-2": d2})
         result = await execute_plan(plan, git_repo, "main", mock_node)
         assert len(result.deliverables) == 2
-        assert result.failed_tasks == []
         assert (git_repo / "target.py").read_text(encoding="utf-8").startswith("# batch2")
 
     async def test_execute_plan_retry_on_worktree_error(self, git_repo: Path) -> None:
@@ -150,7 +152,6 @@ class TestExecutor:
         mock_node = MockImplementationNode(deliverables_queue=[bad_d, good_d])
         result = await execute_plan(plan, git_repo, "main", mock_node, max_retries=2)
         assert len(result.deliverables) == 1
-        assert result.failed_tasks == []
         assert (git_repo / "target.py").read_text(encoding="utf-8").startswith("# fixed")
 
     async def test_execute_plan_hard_stop_on_exhausted_retries(self, git_repo: Path) -> None:
@@ -248,7 +249,6 @@ class TestExecutor:
         mock_node = MockImplementationNode(deliverables_by_task={"task-a": d1, "task-b": d2})
         result = await execute_plan(plan, git_repo, "main", mock_node)
         assert len(result.deliverables) == 2
-        assert result.failed_tasks == []
         assert (git_repo / "file_a.py").read_text(encoding="utf-8") == "a = 2\n"
         assert (git_repo / "file_b.py").read_text(encoding="utf-8") == "b = 2\n"
 

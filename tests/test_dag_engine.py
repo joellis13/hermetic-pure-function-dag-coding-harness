@@ -1,7 +1,6 @@
 """Tests for hermetic.control.dag_engine — topological DAG execution."""
 import asyncio
 import pytest
-from graphlib import CycleError
 
 from hermetic.control.dag_engine import DAGEngine, DAGValidationError
 from hermetic.schemas.plan import TaskBatch, TaskItem
@@ -148,15 +147,15 @@ class TestDAGEngineErrors:
         with pytest.raises(DAGValidationError, match="'a'"):
             await engine.execute_batch(batch)
 
-    async def test_cycle_raises_cycle_error(self):
-        """graphlib raises CycleError on prepare() for cyclic graphs."""
+    async def test_cycle_raises_dag_validation_error(self):
+        """graphlib.CycleError must be wrapped into DAGValidationError by execute_batch."""
         tasks = [
             _make_item("a", deps=["b"]),
             _make_item("b", deps=["a"]),
         ]
         batch = TaskBatch(tasks=tasks)
         engine = DAGEngine(node_fn=_simple_node)
-        with pytest.raises(CycleError):
+        with pytest.raises(DAGValidationError, match="Cycle detected"):
             await engine.execute_batch(batch)
 
     async def test_failing_node_propagates_exception(self):

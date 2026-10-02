@@ -14,7 +14,7 @@ Public API:
 from __future__ import annotations
 
 import asyncio
-from graphlib import CycleError, TopologicalSorter
+from graphlib import CycleError, TopologicalSorter  # CycleError is internal; callers see DAGValidationError
 from typing import Callable, Awaitable, Generic, TypeVar
 
 from hermetic.schemas.plan import TaskBatch, TaskItem
@@ -63,7 +63,12 @@ class DAGEngine(Generic[T]):
         sorter: TopologicalSorter[str] = TopologicalSorter()
         for task in batch.tasks:
             sorter.add(task.id, *task.dependencies)
-        sorter.prepare()
+        try:
+            sorter.prepare()
+        except CycleError as exc:
+            raise DAGValidationError(
+                f"Cycle detected in task dependency graph: {exc}"
+            ) from exc
 
         completed: dict[str, T] = {}
         results_in_order: list[T] = []
