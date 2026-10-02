@@ -104,6 +104,7 @@ async def _run_plan(
     try:
         plan, _ = await planner.plan(context)
     except Exception as exc:
+        await sm.update_run_status(run_id, RunStatus.FAILED)
         console.print(f"[red]Planning error: {exc}[/red]")
         raise typer.Exit(code=1) from exc
 
@@ -233,6 +234,7 @@ async def _run_review(
     try:
         revised_plan, _ = await planner.plan(context, iteration=iteration_ctx)
     except Exception as exc:
+        await sm.update_run_status(run_id, RunStatus.FAILED)
         console.print(f"[red]Planning error: {exc}[/red]")
         raise typer.Exit(code=1) from exc
 

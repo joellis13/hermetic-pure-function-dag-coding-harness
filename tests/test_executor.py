@@ -54,7 +54,13 @@ class MockImplementationNode:
         if task.id in self._by_task:
             item = self._by_task[task.id]
         elif self._queue:
-            item = self._queue[self._call_count % len(self._queue)]
+            # Saturating index: after the queue is exhausted we stay at the last element
+            # rather than wrapping back to the first.  Single-item queues behave identically
+            # to before (index 0 every time), but multi-item queues no longer risk masking a
+            # bug where the executor retries more times than expected and cycles to a
+            # "succeeding" deliverable that hides the over-retry.
+            idx = min(self._call_count, len(self._queue) - 1)
+            item = self._queue[idx]
             self._call_count += 1
         else:
             raise ValueError(f"No mock deliverable for task {task.id}")
@@ -286,3 +292,62 @@ class TestExecutor:
             await execute_plan(plan, git_repo, "main", mock_node, max_retries=0)
         assert exc_info.value.task_id == "empty-task"
         assert "Nothing to commit" in exc_info.value.message
+
+    async def test_parallel_merges_are_serialized(self, git_repo: Path) -> None:
+        """Regression: two tasks in the same batch that finish simultaneously must not
+        race on git checkout of the base branch.  The merge_lock introduced in the
+        remediation ensures only one merge_into_base runs at a time.
+        """
+        (git_repo / "file_x.py").write_text("x = 0\n", encoding="utf-8")
+        (git_repo / "file_y.py").write_text("y = 0\n", encoding="utf-8")
+        import subprocess as _sp
+        _sp.run(["git", "-C", str(git_repo), "add", "."], check=True, capture_output=True)
+        _sp.run(["git", "-C", str(git_repo), "commit", "-m", "add x and y"], check=True, capture_output=True)
+
+        t1 = TaskItem(id="task-x", description="edit x", instruction="edit x", dependencies=[])
+        t2 = TaskItem(id="task-y", description="edit y", instruction="edit y", dependencies=[])
+        plan = ImplementationPlan(
+            plan_id="p-parallel-merge",
+            issue_id="GH-1",
+            batches=[TaskBatch(batch_id="b1", tasks=[t1, t2])],
+        )
+        d1 = TaskDeliverable(
+            task_id="task-x",
+            edits=[StructuredFileEdit(file_path="file_x.py", search_string="0", replacement_string="1")],
+        )
+        d2 = TaskDeliverable(
+            task_id="task-y",
+            edits=[StructuredFileEdit(file_path="file_y.py", search_string="0", replacement_string="1")],
+        )
+        mock_node = MockImplementationNode(deliverables_by_task={"task-x": d1, "task-y": d2})
+        result = await execute_plan(plan, git_repo, "main", mock_node)
+        assert len(result.deliverables) == 2
+        # Both edits must land on the base branch — confirming serialized merges completed
+        assert (git_repo / "file_x.py").read_text(encoding="utf-8") == "x = 1\n"
+        assert (git_repo / "file_y.py").read_text(encoding="utf-8") == "y = 1\n"
+
+
+class TestMockImplementationNode:
+    """Unit tests for MockImplementationNode fixture behaviour."""
+
+    async def test_single_item_queue_always_returns_same_deliverable(self) -> None:
+        """Single-item queues saturate at index 0 — same as the old wrap-around behaviour."""
+        task = TaskItem(id="t", description="d", instruction="i")
+        bad_d = TaskDeliverable(task_id="t")
+        mock = MockImplementationNode(deliverables_queue=[bad_d])
+        for _ in range(5):
+            item, _ = await mock.implement(task)
+            assert item.task_id == "t"
+
+    async def test_multi_item_queue_does_not_wrap(self) -> None:
+        """After a two-item queue is exhausted the last item is returned, not item[0]."""
+        task = TaskItem(id="t", description="d", instruction="i")
+        d1 = TaskDeliverable(task_id="t", explanation="first")
+        d2 = TaskDeliverable(task_id="t", explanation="second")
+        mock = MockImplementationNode(deliverables_queue=[d1, d2])
+        item0, _ = await mock.implement(task)  # call 0 → d1
+        item1, _ = await mock.implement(task)  # call 1 → d2
+        item2, _ = await mock.implement(task)  # call 2 → saturates at d2, not d1
+        assert item0.explanation == "first"
+        assert item1.explanation == "second"
+        assert item2.explanation == "second"  # saturating, not wrapping

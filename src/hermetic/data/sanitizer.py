@@ -16,7 +16,10 @@ import re
 from dataclasses import dataclass
 
 
-# Matches an opening ```json or ``` fence and its closing ```
+# Matches an opening ```json or ``` fence and its closing ```.
+# Non-greedy (.*?) stops at the FIRST closing fence — correct for typical single-block
+# LLM output.  Known limitation: if the model nests a code block inside a fenced JSON
+# response, the match stops prematurely.  Tier-2 repair (model retry) handles that case.
 _FENCE_RE = re.compile(r"```(?:json)?\s*(.*?)\s*```", re.DOTALL)
 
 # Trailing commas before } or ] — the single most common LLM JSON error
@@ -49,6 +52,13 @@ def sanitize_json(raw_output: str) -> str | SanitizationError:
     # Step 2: Strip leading/trailing prose outside the root JSON structure.
     # Handles arrays enclosing objects, objects enclosing arrays, and prose
     # containing citation brackets or braces.
+    #
+    # Known limitation: this heuristic uses only the outermost { } / [ ] positions.
+    # If the raw text contains prose with a lone brace or bracket BEFORE a valid JSON
+    # structure at the same level (e.g. "Error in {module}: {...}"), the slice may
+    # capture an invalid span.  Such cases are not repairable by tier-1 and will
+    # produce a SanitizationError, which the caller should feed back to the model
+    # as a tier-2 retry prompt.
     first_brace = text.find("{")
     last_brace = text.rfind("}")
     first_bracket = text.find("[")

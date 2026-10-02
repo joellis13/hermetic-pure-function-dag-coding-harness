@@ -6,6 +6,7 @@ Implements the pure-function self-healing retry loop.
 """
 from __future__ import annotations
 
+import asyncio
 import shutil
 import subprocess
 from dataclasses import dataclass
@@ -78,6 +79,7 @@ async def _execute_task_with_retry(
     base_branch: str,
     max_retries: int,
     worktree_base: Path | None,
+    merge_lock: asyncio.Lock | None = None,
 ) -> TaskResult:
     """
     Execute a single TaskItem with retry loop.
@@ -110,7 +112,11 @@ async def _execute_task_with_retry(
             attempt += 1
             continue
 
-        # Apply edits in an ephemeral worktree
+        # Apply edits in an ephemeral worktree.
+        # apply_edits, lint, and commit are fully concurrent — each worktree is isolated.
+        # merge_into_base runs git checkout on the *shared* repo working tree, so it
+        # must be serialized to prevent a race on HEAD when tasks in the same batch
+        # both try to merge simultaneously.
         with WorktreeManager(repo_root, base_branch, task.id, worktree_base) as wt:
             try:
                 wt.apply_edits(deliverable.edits)
@@ -118,7 +124,11 @@ async def _execute_task_with_retry(
                 if lint_error:
                     raise WorktreeError(message=lint_error, task_id=task.id)
                 wt.commit(f"hermetic: {task.id} (attempt {attempt})")
-                wt.merge_into_base()
+                if merge_lock is not None:
+                    async with merge_lock:
+                        wt.merge_into_base()
+                else:
+                    wt.merge_into_base()
                 return TaskResult(  # ✅ success
                     deliverable=deliverable,
                     input_tokens=total_input,
@@ -166,13 +176,17 @@ async def execute_plan(
     total_input = 0
     total_output = 0
 
+    # One lock per plan execution — serializes merge_into_base calls so that
+    # parallel tasks in the same batch don't race on the shared repo HEAD.
+    merge_lock = asyncio.Lock()
+
     # Define _node_fn once, outside the batch loop.  impl_node, repo_root, etc. are
     # outer function parameters and do not vary between batches, so no late-binding
     # hazard exists and the default-argument capture trick is unnecessary.
     async def _node_fn(task: TaskItem) -> TaskResult:
         # Returns an immutable TaskResult — no shared mutable state.
         return await _execute_task_with_retry(
-            task, impl_node, repo_root, base_branch, max_retries, worktree_base
+            task, impl_node, repo_root, base_branch, max_retries, worktree_base, merge_lock
         )
 
     for batch in plan.batches:

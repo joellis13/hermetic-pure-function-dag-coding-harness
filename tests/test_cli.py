@@ -554,3 +554,93 @@ class TestImplementCommand:
         assert run is not None
         assert run.status == RunStatus.APPROVED.value
 
+
+class TestPlanFailureStatus:
+    """Verify that plan/review commands mark runs FAILED when the planner throws."""
+
+    def test_plan_command_marks_run_failed_on_planning_error(
+        self,
+        fake_repo: Path,
+        sample_issue: GitHubIssue,
+    ) -> None:
+        db_path = fake_repo / ".harness" / "state.db"
+        with (
+            patch("hermetic.cli.app.GitHubClient") as mock_gh,
+            patch("hermetic.cli.app.PlanningNode") as mock_planner,
+        ):
+            mock_gh.return_value.fetch_issue.return_value = sample_issue
+            mock_planner.return_value.plan = AsyncMock(side_effect=RuntimeError("LLM timeout"))
+
+            result = runner.invoke(
+                app,
+                [
+                    "plan",
+                    "42",
+                    "--repo",
+                    str(fake_repo),
+                    "--owner",
+                    "test-org",
+                    "--github-repo",
+                    "test-repo",
+                    "--token",
+                    "fake-token",
+                    "--no-critic",
+                ],
+            )
+
+        assert result.exit_code == 1
+        assert "Planning error" in result.output
+
+        # The run must be in FAILED status, not stuck in 'planning'
+        sm = StateMachine(db_path)
+        runs_dir = fake_repo / ".harness"
+        assert runs_dir.exists(), "State DB should have been created"
+        # Find the run: list all runs from the DB
+        import aiosqlite
+
+        async def _get_statuses() -> list[str]:
+            async with aiosqlite.connect(db_path) as db:
+                async with db.execute("SELECT status FROM runs") as cur:
+                    return [row[0] for row in await cur.fetchall()]
+
+        statuses = asyncio.run(_get_statuses())
+        assert statuses == [RunStatus.FAILED.value], (
+            f"Expected [failed], got {statuses}"
+        )
+
+    def test_review_command_marks_run_failed_on_planning_error(
+        self,
+        fake_repo: Path,
+        sample_plan: ImplementationPlan,
+    ) -> None:
+        db_path = fake_repo / ".harness" / "state.db"
+        sm = StateMachine(db_path)
+        context = IssueContext(issue_id="GH-42", title="Feature 42", description="Body")
+        run_id = asyncio.run(
+            sm.create_run(
+                issue_id="GH-42",
+                repo_path=str(fake_repo),
+                base_branch="main",
+                context=context,
+            )
+        )
+        asyncio.run(sm.save_plan(run_id, sample_plan))
+
+        with patch("hermetic.cli.app.PlanningNode") as mock_planner:
+            mock_planner.return_value.plan = AsyncMock(side_effect=RuntimeError("quota exceeded"))
+
+            result = runner.invoke(
+                app,
+                ["review", run_id, "--repo", str(fake_repo), "--no-critic"],
+                input="Add more tests\n",
+            )
+
+        assert result.exit_code == 1
+        assert "Planning error" in result.output
+
+        run = asyncio.run(sm.get_run(run_id))
+        assert run is not None
+        assert run.status == RunStatus.FAILED.value, (
+            f"Expected 'failed', got '{run.status}'"
+        )
+
